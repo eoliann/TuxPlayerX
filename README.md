@@ -1,3 +1,19 @@
+![Followers](https://img.shields.io/github/followers/eoliann?style=plastic&color=green)
+![Watchers](https://img.shields.io/github/watchers/eoliann/TuxPlayerX?style=plastic)
+![Stars](https://img.shields.io/github/stars/eoliann/TuxPlayerX?style=plastic)
+
+[![Group](https://img.shields.io/badge/Group-Telegram-blue?style=plastic)](https://t.me/tuxpulse)
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue?style=plastic)](https://www.paypal.com/donate/?hosted_button_id=PTH2EXUDS423S)
+[![Donate](https://img.shields.io/badge/Donate-Revolut-8A2BE2?style=plastic)](http://revolut.me/adriannm9?style=plastic)
+
+![Release Date](https://img.shields.io/github/release-date/eoliann/TuxPlayerX?style=plastic)
+![Last Commit](https://img.shields.io/github/last-commit/eoliann/TuxPlayerX?style=plastic)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
+
+![OS](https://img.shields.io/badge/OS-Linux_&_Windows-blue?style=plastic)
+![Lang](https://img.shields.io/badge/Lang-Python-magenta?style=plastic)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE.md)
+
 # TuxPlayerX
 
 **TuxPlayerX** is a desktop media player for user-provided IPTV/streaming sources. It supports M3U playlist subscriptions and authorized MAC portal subscriptions through VLC/libVLC playback.
@@ -29,21 +45,35 @@ The application does **not** include, sell, resell, host, or provide IPTV subscr
 
 ## Screenshots
 
-Add screenshots here after the first public release.
+<p align="center">
+  <img src="./app/assets/screenshots/TuxPlayerX-Player-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+  <img src="./app/assets/screenshots/TuxPlayerX-Player-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+</p>
 
-```text
-assets/screenshots/player.png
-assets/screenshots/subscriptions.png
-assets/screenshots/settings.png
-```
+<p align="center">
+  <img src="./app/assets/screenshots/TuxPlayerX-Subscriptions-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+  <img src="./app/assets/screenshots/TuxPlayerX-Subscriptions-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+</p>
 
-Example Markdown:
+<p align="center">
+  <img src="./app/assets/screenshots/TuxPlayerX-Subscriptions-add-subscr-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+  <img src="./app/assets/screenshots/TuxPlayerX-Subscriptions-add-subscr-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+</p>
 
-```markdown
-![Player](assets/screenshots/player.png)
-![Subscriptions](assets/screenshots/subscriptions.png)
-![Settings](assets/screenshots/settings.png)
-```
+<p align="center">
+  <img src="./app/assets/screenshots/TuxPlayerX-Settings-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+  <img src="./app/assets/screenshots/TuxPlayerX-Settings-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+</p>
+
+<p align="center">
+  <img src="./app/assets/screenshots/TuxPlayerX-About-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+  <img src="./app/assets/screenshots/TuxPlayerX-About-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+</p>
+
+<p align="center">
+  <img src="./app/assets/screenshots/" alt="TuxPlayerX-v1.0.0" width="45%">
+  <img src="./app/assets/screenshots/" alt="TuxPlayerX-v1.0.0" width="45%">
+</p>
 
 ---
 
