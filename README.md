@@ -70,11 +70,6 @@ The application does **not** include, sell, resell, host, or provide IPTV subscr
   <img src="./app/assets/screenshots/TuxPlayerX-About-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
 </p>
 
-<p align="center">
-  <img src="./app/assets/screenshots/" alt="TuxPlayerX-v1.0.0" width="45%">
-  <img src="./app/assets/screenshots/" alt="TuxPlayerX-v1.0.0" width="45%">
-</p>
-
 ---
 
 ## Requirements
