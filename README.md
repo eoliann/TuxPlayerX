@@ -6,13 +6,14 @@
 [![Donate](https://img.shields.io/badge/Donate-PayPal-blue?style=plastic)](https://www.paypal.com/donate/?hosted_button_id=PTH2EXUDS423S)
 [![Donate](https://img.shields.io/badge/Donate-Revolut-8A2BE2?style=plastic)](http://revolut.me/adriannm9?style=plastic)
 
+![Latest Release](https://img.shields.io/github/v/release/eoliann/TuxPlayerX?style=plastic)
 ![Release Date](https://img.shields.io/github/release-date/eoliann/TuxPlayerX?style=plastic)
 ![Last Commit](https://img.shields.io/github/last-commit/eoliann/TuxPlayerX?style=plastic)
-![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
-![Latest Release](https://img.shields.io/github/v/release/eoliann/TuxPlayerX?style=plastic)
-![DEB Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/tuxplayerx_amd64.deb?style=plastic)
+
+![Latest Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerXSetup.exe?style=plastic)
+![Total Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
 ![Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerXSetup.exe?style=plastic)
-![GitHub Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
+
 
 ![OS](https://img.shields.io/badge/OS-Linux_&_Windows-blue?style=plastic)
 ![Lang](https://img.shields.io/badge/Lang-Python-magenta?style=plastic)
