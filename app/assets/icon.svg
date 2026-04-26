@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="40" y="40" width="944" height="944" rx="220" fill="#121822"/>
+  <rect x="40" y="40" width="944" height="944" rx="220" fill="none" stroke="rgba(90,120,150,0.5)" stroke-width="4"/>
+  <polygon points="360,290 360,734 730,512" fill="#3fc7ff"/>
+  <circle cx="275" cy="512" r="130" fill="#222c3e" stroke="#39e09b" stroke-width="10"/>
+  <text x="275" y="565" text-anchor="middle" font-size="165" font-family="DejaVu Sans, Arial, sans-serif" font-weight="700" fill="#39e09b">T</text>
+  <rect x="670" y="650" width="200" height="200" rx="58" fill="#222c3e"/>
+  <text x="770" y="780" text-anchor="middle" font-size="120" font-family="DejaVu Sans, Arial, sans-serif" font-weight="700" fill="#ffffff">X</text>
+</svg>
