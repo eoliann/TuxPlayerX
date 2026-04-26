@@ -11,9 +11,8 @@
 ![Last Commit](https://img.shields.io/github/last-commit/eoliann/TuxPlayerX?style=plastic)
 
 ![Latest Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerXSetup.exe?style=plastic)
-![Total Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
 ![Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerXSetup.exe?style=plastic)
-
+![Total Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
 
 ![OS](https://img.shields.io/badge/OS-Linux_&_Windows-blue?style=plastic)
 ![Lang](https://img.shields.io/badge/Lang-Python-magenta?style=plastic)
