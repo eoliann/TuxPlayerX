@@ -1,1 +1,0 @@
-"""TuxPlayerX application package."""

@@ -1,0 +1,25 @@
+[package]
+name = "tuxplayerx"
+version = "2.0.0"
+description = "TuxPlayerX desktop streaming player"
+authors = ["eoliann"]
+edition = "2021"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2"
+urlencoding = "2"
+dirs-next = "2"
+anyhow = "1"
+open = "5"
+sha2 = "0.10"

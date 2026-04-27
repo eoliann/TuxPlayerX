@@ -1,1 +1,0 @@
-"""Streaming source providers."""

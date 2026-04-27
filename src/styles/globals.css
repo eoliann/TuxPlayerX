@@ -1,0 +1,191 @@
+@import "tailwindcss";
+
+@custom-variant light (&:where(.light, .light *));
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #020617;
+}
+
+:root.light {
+  color-scheme: light;
+  background: #f1f5f9;
+}
+
+html,
+body,
+#root,
+#pip-root {
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at top left, rgb(14 116 144 / 0.24), transparent 34rem),
+    radial-gradient(circle at bottom right, rgb(16 185 129 / 0.16), transparent 30rem),
+    #020617;
+  color: #e2e8f0;
+}
+
+.light body {
+  background:
+    radial-gradient(circle at top left, rgb(14 165 233 / 0.18), transparent 34rem),
+    radial-gradient(circle at bottom right, rgb(16 185 129 / 0.12), transparent 30rem),
+    #f1f5f9;
+  color: #0f172a;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+::selection {
+  background: rgb(34 211 238 / 0.35);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(71 85 105) transparent;
+}
+
+.light * {
+  scrollbar-color: rgb(148 163 184) transparent;
+}
+
+.field {
+  width: 100%;
+  border-radius: 1rem;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(15 23 42 / 0.88);
+  padding: 0.75rem 1rem;
+  color: inherit;
+  outline: none;
+  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.field:focus {
+  border-color: rgb(34 211 238 / 0.7);
+  box-shadow: 0 0 0 4px rgb(34 211 238 / 0.12);
+}
+
+.light .field {
+  border-color: rgb(203 213 225);
+  background: rgb(255 255 255 / 0.92);
+  color: rgb(15 23 42);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+}
+
+.field::placeholder,
+.light .field::placeholder {
+  color: rgb(100 116 139);
+}
+
+.label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgb(100 116 139);
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 1rem;
+  background: rgb(34 211 238);
+  padding: 0.7rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 900;
+  color: rgb(2 6 23);
+  transition: transform 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.btn-primary:hover {
+  background: rgb(103 232 249);
+  box-shadow: 0 12px 28px rgb(8 145 178 / 0.25);
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 1rem;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(255 255 255 / 0.05);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+}
+
+.btn-secondary:hover {
+  background: rgb(255 255 255 / 0.1);
+  transform: translateY(-1px);
+}
+
+.light .btn-secondary {
+  border-color: rgb(203 213 225);
+  background: rgb(255 255 255 / 0.86);
+  color: rgb(15 23 42);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.05);
+}
+
+.light .btn-secondary:hover {
+  background: rgb(241 245 249);
+}
+
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 1rem;
+  border: 1px solid rgb(248 113 113 / 0.35);
+  background: rgb(248 113 113 / 0.1);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: rgb(252 165 165);
+}
+
+.light .btn-danger {
+  border-color: rgb(248 113 113 / 0.45);
+  background: rgb(254 242 242);
+  color: rgb(185 28 28);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-radius: 1.25rem;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(255 255 255 / 0.04);
+  padding: 1rem;
+  font-weight: 800;
+}
+
+.light .setting-row {
+  border-color: rgb(203 213 225);
+  background: rgb(255 255 255 / 0.86);
+  color: rgb(15 23 42);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+}

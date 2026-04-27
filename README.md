@@ -23,407 +23,195 @@
 ![Lang](https://img.shields.io/badge/Lang-Python-magenta?style=plastic)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE.md)
 
-# TuxPlayerX
 
-**TuxPlayerX** is a desktop media player for user-provided IPTV/streaming sources. It supports M3U playlist subscriptions and authorized MAC portal subscriptions through VLC/libVLC playback.
+# TuxPlayerX Tauri
 
-The application does **not** include, sell, resell, host, or provide IPTV subscriptions, playlists, channels, media files, portal access, credentials, or streaming content.
+TuxPlayerX Tauri is a redesigned desktop streaming player inspired by the visual system used in TuxPulse2.
 
-> **Legal notice:** Use TuxPlayerX only with streams, playlists, portals, and subscriptions that you are legally authorized to access.
+It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a **Rust backend**.
 
----
+> Legal notice: TuxPlayerX is only a media player. It does not provide, sell, host, distribute or promote IPTV subscriptions, playlists, MAC portal credentials, TV channels, movies, series or any streaming content. Use only sources you are authorized to access.
 
 ## Features
 
-- M3U playlist playback
-- Authorized MAC portal subscription support
-- VLC/libVLC-based video playback
-- Subscription manager
-- Default subscription loading on startup
-- Channel list and channel search
-- Fullscreen video playback
-- Dark theme by default
-- Optional light theme
-- Local SQLite storage
-- GitHub release update check
-- Linux `.deb` package build
-- Windows `.exe` portable build
-- Windows installer script through Inno Setup
+- Modern TuxPulse2-style interface
+- Dark mode by default
+- Optional full-application light mode
+- M3U subscription management
+- Authorized MAC/Stalker/Ministra-style subscription adapter
+- Default subscription support
+- Channel loading and search
+- Subscription info refresh where supported by the provider
+- HTML5/HLS video playback in the app window
+- Detachable resizable Picture-in-Picture window
+- Single active playback behavior: embedded playback stops when PiP or VLC is opened
+- Always-on-top detached player window
+- Optional external VLC fallback command
+- Local SQLite storage handled by Rust
+- GitHub-ready About page and release information
 
----
+## Important playback note
 
-## Screenshots
+This Tauri version uses the system WebView video engine plus `hls.js` for HLS streams. It will work best with `.m3u8`/HLS and browser-compatible streams.
 
-<p align="center">
-  <img src="./app/assets/screenshots/TuxPlayerX-Player-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-  <img src="./app/assets/screenshots/TuxPlayerX-Player-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-</p>
-
-<p align="center">
-  <img src="./app/assets/screenshots/TuxPlayerX-Subscriptions-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-  <img src="./app/assets/screenshots/TuxPlayerX-Subscriptions-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-</p>
-
-<p align="center">
-  <img src="./app/assets/screenshots/TuxPlayerX-Subscriptions-add-subscr-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-  <img src="./app/assets/screenshots/TuxPlayerX-Subscriptions-add-subscr-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-</p>
-
-<p align="center">
-  <img src="./app/assets/screenshots/TuxPlayerX-Settings-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-  <img src="./app/assets/screenshots/TuxPlayerX-Settings-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-</p>
-
-<p align="center">
-  <img src="./app/assets/screenshots/TuxPlayerX-About-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-  <img src="./app/assets/screenshots/TuxPlayerX-About-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-</p>
-
----
+Some IPTV streams that require VLC-specific demuxers/codecs may not play in the WebView. For those streams, use the **Open in VLC** fallback. A deeper embedded VLC backend can be added later, but it is more complex than the Python/PySide6 version.
 
 ## Requirements
 
-### Linux
+### Development
 
-Recommended distributions:
+- Node.js 20+
+- npm
+- Rust and Cargo
+- Tauri system dependencies
 
-- Debian-based distributions
-- Ubuntu
-- Linux Mint
+### Linux Tauri dependencies
 
-Required runtime components:
+See the official Tauri Linux prerequisites for your distro.
 
-- VLC
-- libVLC
-- Qt/XCB runtime libraries
-
-When installing the `.deb` package with `apt`, required dependencies should be resolved automatically.
-
-### Windows
-
-Required runtime components:
-
-- Windows 10 or Windows 11
-- VLC Media Player installed on the system
-
-TuxPlayerX uses VLC/libVLC for playback. If VLC is not installed, playback may not work.
-
----
-
-## Installation
-
-### Linux `.deb`
-
-Download the latest `.deb` package from the Releases page, then install it with:
-
-```bash
-sudo apt install ./tuxplayerx_VERSION_amd64.deb
-```
-
-Replace `VERSION` with the downloaded version number.
-
-Do not use `dpkg -i` unless you know how to manually fix missing dependencies. `apt install ./package.deb` is recommended because it can resolve dependencies automatically.
-
-Start the application with:
-
-```bash
-tuxplayerx
-```
-
-### Windows portable `.exe`
-
-Download the Windows build from the Releases page.
-
-Run:
-
-```text
-TuxPlayerX.exe
-```
-
-Make sure VLC Media Player is installed before using playback features.
-
-### Windows installer
-
-Download and run:
-
-```text
-TuxPlayerXSetup-VERSION.exe
-```
-
-Follow the installer steps, then launch TuxPlayerX from the Start Menu or desktop shortcut.
-
----
-
-## How to use TuxPlayerX
-
-### 1. Add a subscription
-
-Open the application and go to:
-
-```text
-Subscriptions
-```
-
-Click:
-
-```text
-Add
-```
-
-You will see two subscription types:
-
-```text
-M3U
-MAC
-```
-
-Choose the type that matches your authorized subscription.
-
----
-
-### 2. Add an M3U subscription
-
-Select:
-
-```text
-M3U
-```
-
-Fill in:
-
-- **Name**: a friendly name for the subscription
-- **M3U URL/file**: the M3U playlist URL or local playlist path
-- **Username**: optional, only if your provider uses it
-- **Password**: optional, only if your provider uses it
-- **Use as default subscription**: enable this if you want the subscription to load automatically when the app starts
-
-Click:
-
-```text
-Save
-```
-
-If the M3U URL is based on an Xtream Codes-style API and includes valid username/password parameters, TuxPlayerX can try to read subscription information such as expiration date and active/max connections.
-
----
-
-### 3. Add a MAC subscription
-
-Select:
-
-```text
-MAC
-```
-
-Fill in:
-
-- **Name**: a friendly name for the subscription
-- **Portal URL**: the portal URL provided by your authorized provider
-- **MAC address**: the MAC address assigned to your subscription
-- **Use as default subscription**: enable this if you want the subscription to load automatically when the app starts
-
-Click:
-
-```text
-Save
-```
-
-Some MAC/Stalker/Ministra portals use custom implementations. If your provider uses a non-standard API, a provider-specific adapter may be required.
-
----
-
-### 4. Set a default subscription
-
-Go to:
-
-```text
-Subscriptions
-```
-
-Select a subscription from the table and click:
-
-```text
-Set default
-```
-
-The default subscription is loaded automatically when TuxPlayerX starts.
-
----
-
-### 5. Refresh subscription information
-
-Go to:
-
-```text
-Subscriptions
-```
-
-Select the subscription and click:
-
-```text
-Refresh info
-```
-
-TuxPlayerX will try to display:
-
-- subscription status
-- expiration date
-- active connections
-- maximum allowed connections
-
-If this information is not shown, the provider may not expose it through a supported API format.
-
----
-
-### 6. Start a channel
-
-Go to:
-
-```text
-Player
-```
-
-Load a subscription if it is not already loaded.
-
-Then:
-
-1. Search or scroll through the channel list.
-2. Select a channel.
-3. Double-click the channel or use the playback controls.
-
-The stream will start in the video area.
-
----
-
-### 7. Use fullscreen playback
-
-Double-click the video area to enter fullscreen playback.
-
-To exit fullscreen:
-
-- press `Esc`, or
-- double-click the video area again
-
----
-
-## Build from source
-
-### Linux development run
+For Debian/Ubuntu/Linux Mint, the usual base set is similar to:
 
 ```bash
 sudo apt update
-sudo apt install -y python3-venv python3-pip vlc libvlc5
-./run_dev.sh
+sudo apt install -y \
+  build-essential \
+  curl \
+  wget \
+  file \
+  libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  patchelf
 ```
 
-### Build Linux `.deb`
+## Development run
 
 ```bash
-chmod +x build_all.sh scripts/*.sh
-./build_all.sh
+npm install
+npm run tauri:dev
 ```
 
-The `.deb` package will be created in:
+## Production build
+
+```bash
+npm install
+npm run tauri:build
+```
+
+Linux bundles are generated under:
 
 ```text
-dist/
+src-tauri/target/release/bundle/
 ```
 
-### Build Windows `.exe`
-
-Build the Windows executable on Windows, not on Linux.
+Windows bundles are generated when building on Windows with:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+npm install
+npm run tauri:build
 ```
 
-The portable executable will be created in:
+## How to use
 
-```text
-dist\TuxPlayerX\TuxPlayerX.exe
-```
+### Add an M3U subscription
 
-To build the Windows installer, install Inno Setup and compile:
+1. Open **Subscriptions**.
+2. Click **Add subscription**.
+3. Select **M3U**.
+4. Enter a display name.
+5. Enter the M3U URL or local file path.
+6. Optional: add username and password if your provider requires them.
+7. Enable **Use as default** if needed.
+8. Save the subscription.
+9. Open **Player** and click **Load channels**.
+10. Select a channel and click **Play**.
 
-```text
-packaging\windows\tuxplayerx.iss
-```
+### Add a MAC subscription
 
----
+1. Open **Subscriptions**.
+2. Click **Add subscription**.
+3. Select **MAC**.
+4. Enter a display name.
+5. Enter the portal URL.
+6. Enter your authorized MAC address.
+7. Enable **Use as default** if needed.
+8. Save the subscription.
+9. Open **Player** and click **Load channels**.
+10. Select a channel and click **Play**.
 
-## Update system
+MAC portal compatibility depends on the provider implementation. Some services may require adapter-specific changes.
 
-TuxPlayerX can check the latest version through GitHub Releases.
+### Use detached Picture-in-Picture
 
-Before publishing releases, check the values in:
+1. Start a channel in **Player**.
+2. Click **Detach player**.
+3. A separate always-on-top window opens.
+4. The embedded player in the main window is stopped automatically.
+5. Resize the detached window like a normal window.
+6. Close it when finished.
 
-```text
-app/version.py
-```
+### Use VLC fallback
 
-Example:
+1. Start a channel in **Player**.
+2. Click **Open in VLC**.
+3. TuxPlayerX opens the current stream in the configured external player.
+4. The embedded player in the main window is stopped automatically so the stream remains active in only one place.
 
-```python
-APP_NAME = "TuxPlayerX"
-APP_SLUG = "tuxplayerx"
-APP_VERSION = "1.0.0"
-APP_AUTHOR = "eoliann"
-GITHUB_REPO = "eoliann/TuxPlayerX"
-DOWNLOAD_URL = "https://github.com/eoliann/TuxPlayerX/releases"
-AUTHOR_URL = "https://github.com/eoliann"
-```
-
----
-
-## What TuxPlayerX does not do
-
-TuxPlayerX does not:
-
-- provide IPTV subscriptions
-- provide M3U playlists
-- provide MAC portal access
-- provide channels or media content
-- host or redistribute streams
-- bypass DRM
-- bypass provider authentication
-- bypass subscription restrictions
-- guarantee that third-party streams will work
-
-The user is responsible for using only authorized sources.
-
----
-
-## Disclaimer
-
-TuxPlayerX is provided for lawful playback of user-provided streaming sources.
-
-The developer does not provide subscriptions, playlists, channels, media files, portal access, or credentials.
-
-The developer is not responsible for:
-
-- misuse of the application
-- unauthorized access to third-party services
-- provider account issues
-- unavailable or unstable streams
-- system damage caused by improper installation, modification, or use
-- data loss, configuration loss, or other damages caused directly or indirectly by using the software
-
-Use the software at your own risk.
-
----
+When you start a new channel in the main window, TuxPlayerX also closes the detached PiP window and stops the previously launched external player process where possible.
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+MIT License.
 
----
+## Disclaimer
 
-## Author
+This software is provided “as is”, without warranty of any kind. The developer is not responsible for system damage, data loss, misuse, illegal streaming sources, unavailable subscriptions, provider-side changes or playback issues caused by third-party services.
 
-Developed by **eoliann**.
 
-GitHub profile:
+## Application icon
+
+The Tauri icon set is synchronized with the original TuxPlayerX desktop icon, including the sidebar logo, window icon and bundled installer icons.
+
+## Troubleshooting: Tauri permission/cache build error
+
+If `npm run tauri:dev` fails with a message similar to:
 
 ```text
-https://github.com/eoliann
+failed to read plugin permissions ... app_hide.toml: No such file or directory
 ```
+
+clean the generated Rust/Tauri cache and run again:
+
+```bash
+./clean_tauri_cache.sh
+npm run tauri:dev
+```
+
+This usually happens when a Tauri project was moved or copied from another path and the generated `src-tauri/target` cache still contains stale absolute paths.
+
+## Layout update
+
+The default desktop window starts larger and the Channels panel is more compact, giving the video player more room on first launch.
+
+## Version management
+
+The application version is managed manually in a single place:
+
+```json
+package.json -> version
+```
+
+Before development/build commands, `scripts/sync-version.mjs` automatically synchronizes this value to:
+
+- `src-tauri/Cargo.toml`
+- `src-tauri/tauri.conf.json`
+
+The Rust backend reads the runtime version from Cargo using `env!("CARGO_PKG_VERSION")`, so do not hardcode the version in `src-tauri/src/main.rs`.
+
+To change the version, edit only `package.json`, then run:
+
+```bash
+npm run sync:version
+```
+
+- Detach player opens a clean video-only PiP window

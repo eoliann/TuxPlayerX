@@ -1,8 +1,0 @@
-APP_NAME = "TuxPlayerX"
-APP_SLUG = "tuxplayerx"
-APP_VERSION = "1.0.0"
-APP_AUTHOR = "eoliann"
-APP_LICENSE = "MIT"
-GITHUB_REPO = "eoliann/TuxPlayerX"
-DOWNLOAD_URL = "https://github.com/eoliann/TuxPlayerX/releases"
-AUTHOR_URL = "https://github.com/eoliann"

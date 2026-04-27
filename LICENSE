@@ -21,16 +21,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Additional project notice:
-
-TuxPlayerX is a media player for user-provided and legally authorized streaming
-sources only. The developer does not provide, sell, resell, host, recommend, or
-distribute IPTV subscriptions, playlists, channels, media files, portal access,
-MAC portal credentials, usernames, passwords, or streaming content.
-
-The user is solely responsible for ensuring that any playlist, stream, portal,
-account, or subscription used with this software is legal and authorized.
-
-The developer is not responsible for misuse of the software, unauthorized access
-to third-party services, provider account issues, unavailable streams, data loss,
-system damage, configuration damage, or any other direct or indirect damage
-resulting from installation, modification, or use of the software.
+TuxPlayerX is only a media player. The developer does not provide, sell, host,
+distribute or promote IPTV subscriptions, M3U playlists, MAC portal access,
+TV channels, movies, series or any other streaming content. Users are fully
+responsible for using only legal streaming sources they are authorized to access.
+The developer is not responsible for system damage, data loss, misuse, illegal
+sources used by third parties, unavailable subscriptions, provider-side changes
+or playback issues caused by third-party services.
