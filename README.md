@@ -59,8 +59,8 @@ Some IPTV streams that require VLC-specific demuxers/codecs may not play in the 
 ## Screenshots
 
 <p align="center">
-  <img src="./src-tauri/assets/screenshots/v1.0.0/TuxPlayerX-Player-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-  <img src="./src-tauri/assets/screenshots/v1.0.0/TuxPlayerX-Player-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+  <img src="./src-tauri/assets/screenshots/1.0.0/TuxPlayerX-Player-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+  <img src="./src-tauri/assets/screenshots/1.0.0/TuxPlayerX-Player-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
 </p>
 
 ## Requirements
