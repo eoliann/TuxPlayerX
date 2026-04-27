@@ -59,8 +59,23 @@ Some IPTV streams that require VLC-specific demuxers/codecs may not play in the 
 ## Screenshots
 
 <p align="center">
-  <img src="./src-tauri/assets/screenshots/1.0.0/TuxPlayerX-Player-dark-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
-  <img src="./src-tauri/assets/screenshots/1.0.0/TuxPlayerX-Player-light-v1.0.0.png" alt="TuxPlayerX-v1.0.0" width="45%">
+  <img src="./src-tauri/assets/screenshots/2.0.0/Player-dark.png" alt="TuxPlayerX-v2.0.0" width="45%">
+  <img src="./src-tauri/assets/screenshots/2.0.0/Player-light.png" alt="TuxPlayerX-v2.0.0" width="45%">
+</p>
+
+<p align="center">
+  <img src="./src-tauri/assets/screenshots/2.0.0/Subscriptions-dark.png" alt="TuxPlayerX-v2.0.0" width="45%">
+  <img src="./src-tauri/assets/screenshots/2.0.0/Subscriptions-light.png" alt="TuxPlayerX-v2.0.0" width="45%">
+</p>
+
+<p align="center">
+  <img src="./src-tauri/assets/screenshots/2.0.0/Settings-dark.png" alt="TuxPlayerX-v2.0.0" width="45%">
+  <img src="./src-tauri/assets/screenshots/2.0.0/Settings-light.png" alt="TuxPlayerX-v2.0.0" width="45%">
+</p>
+
+<p align="center">
+  <img src="./src-tauri/assets/screenshots/2.0.0/About-dark.png" alt="TuxPlayerX-v2.0.0" width="45%">
+  <img src="./src-tauri/assets/screenshots/2.0.0/About-light.png" alt="TuxPlayerX-v2.0.0" width="45%">
 </p>
 
 ## Requirements
