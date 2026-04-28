@@ -24,7 +24,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE.md)
 
 
-# TuxPlayerX Tauri
+# TuxPlayerX
 
 TuxPlayerX Tauri is a redesigned desktop streaming player inspired by the visual system used in TuxPulse2.
 
