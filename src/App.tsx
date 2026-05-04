@@ -14,6 +14,9 @@ const defaultSettings: AppSettings = {
   autoLoadDefault: true,
   autoRestart: true,
   externalPlayerCommand: 'vlc',
+  epgUrl: '',
+  epgTimezoneMode: 'auto',
+  epgTimeOffsetMinutes: 0,
 };
 
 function App() {

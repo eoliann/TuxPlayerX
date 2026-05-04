@@ -24,6 +24,19 @@ export interface Channel {
   logo?: string | null;
   group?: string | null;
   rawCmd?: string | null;
+  epgId?: string | null;
+}
+
+export interface EpgProgram {
+  channelId: string;
+  title: string;
+  subtitle?: string | null;
+  description?: string | null;
+  start: string;
+  stop?: string | null;
+  startLabel: string;
+  stopLabel?: string | null;
+  isNow: boolean;
 }
 
 export interface SubscriptionInfo {
@@ -40,6 +53,9 @@ export interface AppSettings {
   autoLoadDefault: boolean;
   autoRestart: boolean;
   externalPlayerCommand: string;
+  epgUrl: string;
+  epgTimezoneMode: 'auto' | 'local' | 'manual';
+  epgTimeOffsetMinutes: number;
 }
 
 export interface AppInfo {

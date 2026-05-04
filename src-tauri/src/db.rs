@@ -57,6 +57,9 @@ impl Database {
             ("auto_load_default", "true"),
             ("auto_restart", "true"),
             ("external_player_command", "vlc"),
+            ("epg_url", ""),
+            ("epg_timezone_mode", "auto"),
+            ("epg_time_offset_minutes", "0"),
         ];
         for (key, value) in defaults {
             conn.execute(
@@ -181,6 +184,9 @@ impl Database {
             auto_load_default: get("auto_load_default", "true")? == "true",
             auto_restart: get("auto_restart", "true")? == "true",
             external_player_command: get("external_player_command", "vlc")?,
+            epg_url: get("epg_url", "")?,
+            epg_timezone_mode: get("epg_timezone_mode", "auto")?,
+            epg_time_offset_minutes: get("epg_time_offset_minutes", "0")?.parse().unwrap_or(0),
         })
     }
 
@@ -192,6 +198,9 @@ impl Database {
             ("auto_load_default", settings.auto_load_default.to_string()),
             ("auto_restart", settings.auto_restart.to_string()),
             ("external_player_command", settings.external_player_command.clone()),
+            ("epg_url", settings.epg_url.clone()),
+            ("epg_timezone_mode", settings.epg_timezone_mode.clone()),
+            ("epg_time_offset_minutes", settings.epg_time_offset_minutes.to_string()),
         ];
         for (key, value) in values {
             conn.execute(

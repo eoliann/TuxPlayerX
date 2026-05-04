@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use db::Database;
-use models::{AppInfo, AppSettings, Channel, Subscription, SubscriptionInfo};
+use models::{AppInfo, AppSettings, Channel, EpgProgram, Subscription, SubscriptionInfo};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -381,6 +381,13 @@ async fn refresh_subscription_info(state: State<'_, AppState>, id: i64) -> Resul
     Ok(info)
 }
 
+
+#[tauri::command]
+async fn load_epg_programs(state: State<'_, AppState>, channel: Channel) -> Result<Vec<EpgProgram>, String> {
+    let settings = state.db.lock().map_err(err)?.get_settings().map_err(err)?;
+    providers::load_epg_programs(&settings.epg_url, &channel, &settings.epg_timezone_mode, settings.epg_time_offset_minutes).await.map_err(err)
+}
+
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Result<AppSettings, String> {
     state.db.lock().map_err(err)?.get_settings().map_err(err)
@@ -496,6 +503,7 @@ pub fn run() {
             load_channels,
             resolve_channel_stream,
             refresh_subscription_info,
+            load_epg_programs,
             get_settings,
             save_settings,
             open_url,

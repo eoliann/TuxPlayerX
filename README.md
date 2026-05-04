@@ -1,30 +1,4 @@
-![Followers](https://img.shields.io/github/followers/eoliann?style=plastic&color=green)
-![Watchers](https://img.shields.io/github/watchers/eoliann/TuxPlayerX?style=plastic)
-![Stars](https://img.shields.io/github/stars/eoliann/TuxPlayerX?style=plastic)
-
-[![Group](https://img.shields.io/badge/Group-Telegram-blue?style=plastic)](https://t.me/tuxpulse)
-[![Donate](https://img.shields.io/badge/Donate-PayPal-blue?style=plastic)](https://www.paypal.com/donate/?hosted_button_id=PTH2EXUDS423S)
-[![Donate](https://img.shields.io/badge/Donate-Revolut-8A2BE2?style=plastic)](http://revolut.me/adriannm9?style=plastic)
-
-![Latest Release](https://img.shields.io/github/v/release/eoliann/TuxPlayerX?style=plastic)
-![Release Date](https://img.shields.io/github/release-date/eoliann/TuxPlayerX?style=plastic)
-![Last Commit](https://img.shields.io/github/last-commit/eoliann/TuxPlayerX?style=plastic)
-
-![Latest Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerXSetup.exe?style=plastic)
-![Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerXSetup.exe?style=plastic)
-
-![Latest DEB Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/tuxplayerx_amd64.deb?style=plastic)
-![DEB Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/tuxplayerx_amd64.deb?style=plastic)
-
-
-![Total Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
-
-![OS](https://img.shields.io/badge/OS-Linux_&_Windows-blue?style=plastic)
-![Lang](https://img.shields.io/badge/Lang-Python-magenta?style=plastic)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE.md)
-
-
-# TuxPlayerX
+# TuxPlayerX Tauri
 
 TuxPlayerX Tauri is a redesigned desktop streaming player inspired by the visual system used in TuxPulse2.
 
@@ -55,28 +29,6 @@ It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a
 This Tauri version uses the system WebView video engine plus `hls.js` for HLS streams. It will work best with `.m3u8`/HLS and browser-compatible streams.
 
 Some IPTV streams that require VLC-specific demuxers/codecs may not play in the WebView. For those streams, use the **Open in VLC** fallback. A deeper embedded VLC backend can be added later, but it is more complex than the Python/PySide6 version.
-
-## Screenshots
-
-<p align="center">
-  <img src="./src-tauri/assets/screenshots/2.0.0/Player-dark.png" alt="TuxPlayerX-v2.0.0" width="45%">
-  <img src="./src-tauri/assets/screenshots/2.0.0/Player-light.png" alt="TuxPlayerX-v2.0.0" width="45%">
-</p>
-
-<p align="center">
-  <img src="./src-tauri/assets/screenshots/2.0.0/Subscriptions-dark.png" alt="TuxPlayerX-v2.0.0" width="45%">
-  <img src="./src-tauri/assets/screenshots/2.0.0/Subscriptions-light.png" alt="TuxPlayerX-v2.0.0" width="45%">
-</p>
-
-<p align="center">
-  <img src="./src-tauri/assets/screenshots/2.0.0/Settings-dark.png" alt="TuxPlayerX-v2.0.0" width="45%">
-  <img src="./src-tauri/assets/screenshots/2.0.0/Settings-light.png" alt="TuxPlayerX-v2.0.0" width="45%">
-</p>
-
-<p align="center">
-  <img src="./src-tauri/assets/screenshots/2.0.0/About-dark.png" alt="TuxPlayerX-v2.0.0" width="45%">
-  <img src="./src-tauri/assets/screenshots/2.0.0/About-light.png" alt="TuxPlayerX-v2.0.0" width="45%">
-</p>
 
 ## Requirements
 
@@ -237,3 +189,33 @@ npm run sync:version
 ```
 
 - Detach player opens a clean video-only PiP window
+
+## EPG / TV Guide
+
+TuxPlayerX supports XMLTV EPG sources.
+
+To enable TV programme guide data:
+
+1. Open **Settings**.
+2. Paste your XMLTV EPG URL or local XMLTV file path in **EPG / XMLTV URL**.
+3. Click **Save settings**.
+4. Open **Player** and start a channel.
+5. The **TV Guide / EPG** panel below the video will show available programmes for the selected channel.
+
+EPG matching is done using, in this order:
+
+- M3U `tvg-id`, when available;
+- MAC portal EPG/channel IDs, when available;
+- channel name matching against XMLTV `display-name`.
+
+If no data appears, verify that the XMLTV channel IDs or display names match the channel names from your playlist/provider.
+## EPG / TV Guide time correction
+
+TuxPlayerX supports XMLTV EPG sources. In **Settings**, add the XMLTV URL and choose the EPG time mode:
+
+- **Auto / XMLTV timezone**: reads XMLTV timezone offsets and displays programme times in the local system timezone.
+- **Treat EPG times as local time**: ignores XMLTV offsets and treats programme times as local.
+- **Manual offset**: applies a correction in minutes when a guide source is consistently shifted.
+
+For example, use `-60` if programmes appear one hour too late, or `+60` if they appear one hour too early.
+
