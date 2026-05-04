@@ -1,3 +1,29 @@
+![Followers](https://img.shields.io/github/followers/eoliann?style=plastic&color=green)
+![Watchers](https://img.shields.io/github/watchers/eoliann/TuxPlayerX?style=plastic)
+![Stars](https://img.shields.io/github/stars/eoliann/TuxPlayerX?style=plastic)
+
+[![Group](https://img.shields.io/badge/Group-Telegram-blue?style=plastic)](https://t.me/tuxpulse)
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue?style=plastic)](https://www.paypal.com/donate/?hosted_button_id=PTH2EXUDS423S)
+[![Donate](https://img.shields.io/badge/Donate-Revolut-8A2BE2?style=plastic)](http://revolut.me/adriannm9?style=plastic)
+
+![Latest Release](https://img.shields.io/github/v/release/eoliann/TuxPlayerX?style=plastic)
+![Release Date](https://img.shields.io/github/release-date/eoliann/TuxPlayerX?style=plastic)
+![Last Commit](https://img.shields.io/github/last-commit/eoliann/TuxPlayerX?style=plastic)
+
+![Latest Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerXSetup.exe?style=plastic)
+![Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerXSetup.exe?style=plastic)
+
+![Latest DEB Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/tuxplayerx_amd64.deb?style=plastic)
+![DEB Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/tuxplayerx_amd64.deb?style=plastic)
+
+
+![Total Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
+
+![OS](https://img.shields.io/badge/OS-Linux_&_Windows-blue?style=plastic)
+![Lang](https://img.shields.io/badge/Lang-Python-magenta?style=plastic)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE.md)
+
+
 # TuxPlayerX Tauri
 
 TuxPlayerX Tauri is a redesigned desktop streaming player inspired by the visual system used in TuxPulse2.
