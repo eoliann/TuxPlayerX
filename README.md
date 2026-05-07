@@ -23,7 +23,7 @@
 ![Total Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
 
 ![OS](https://img.shields.io/badge/OS-Linux_&_Windows-blue?style=plastic)
-![Lang](https://img.shields.io/badge/Lang-Python-magenta?style=plastic)
+![Lang](https://img.shields.io/badge/Lang-TypeScript_&_Rust-red?style=plastic)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE.md)
 
 
