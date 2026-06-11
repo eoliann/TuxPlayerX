@@ -13,8 +13,11 @@
 ![Latest Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerXSetup.exe?style=plastic)
 ![Windows Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerXSetup.exe?style=plastic)
 
-![Latest DEB Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/tuxplayerx_amd64.deb?style=plastic)
-![DEB Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/tuxplayerx_amd64.deb?style=plastic)
+![Latest DEB Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerX_amd64.deb?style=plastic)
+![DEB Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerX_amd64.deb?style=plastic)
+
+![Latest RPM Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerX_x86_64.rpm?style=plastic)
+![RPM Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerX_x86_64.rpm?style=plastic)
 
 
 ![Total Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
