@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ExternalLink, Maximize2, Play, RefreshCw, Search } from 'lucide-react';
-import { Channel, AppSettings, Subscription } from '../lib/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CalendarDays, ExternalLink, Maximize2, Play, RefreshCw, Search } from 'lucide-react';
+import { Channel, EpgProgram, AppSettings, Subscription } from '../lib/types';
 import { api, isTauriRuntime } from '../lib/api';
 import { VideoSurface, VideoSurfaceHandle } from './VideoSurface';
 import { cn } from '../lib/utils';
@@ -22,7 +22,17 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
   const [externalPlayback, setExternalPlayback] = useState(false);
   const [platform, setPlatform] = useState('web');
   const [loading, setLoading] = useState(false);
+  const [epgPrograms, setEpgPrograms] = useState<EpgProgram[]>([]);
+  const [epgLoading, setEpgLoading] = useState(false);
   const videoSurfaceRef = useRef<VideoSurfaceHandle | null>(null);
+  const epgScrollRef = useRef<HTMLDivElement | null>(null);
+  const nowPlayingRef = useCallback((node: HTMLDivElement | null) => {
+    if (node) {
+      window.requestAnimationFrame(() => {
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    }
+  }, []);
 
   const isWindowsRuntime = isTauriRuntime() && platform === 'windows';
 
@@ -71,6 +81,15 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken, settings.autoLoadDefault]);
 
+  useEffect(() => {
+    if (currentChannel) {
+      loadEpgForChannel(currentChannel).catch(() => undefined);
+    } else {
+      setEpgPrograms([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentChannel?.id, settings.epgUrl, settings.epgTimezoneMode, settings.epgTimeOffsetMinutes]);
+
   const handleLoadChannels = async (id = selectedSubId) => {
     if (!id) return;
     setLoading(true);
@@ -82,6 +101,23 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
       onStatus(String(err));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadEpgForChannel = async (channel: Channel) => {
+    if (!settings.epgUrl?.trim()) {
+      setEpgPrograms([]);
+      return;
+    }
+    setEpgLoading(true);
+    try {
+      const programs = await api.loadEpgPrograms(channel);
+      setEpgPrograms(programs);
+    } catch (err) {
+      setEpgPrograms([]);
+      onStatus(`EPG unavailable: ${String(err)}`);
+    } finally {
+      setEpgLoading(false);
     }
   };
 
@@ -233,6 +269,9 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <button onClick={() => currentChannel && loadEpgForChannel(currentChannel)} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold hover:bg-white/10 light:border-slate-200 light:bg-slate-50">
+                <CalendarDays size={16} /> EPG
+              </button>
               <button onClick={() => currentChannel && playChannel(currentChannel)} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold hover:bg-white/10 light:border-slate-200 light:bg-slate-50">
                 <Play size={16} /> Restart
               </button>
@@ -250,12 +289,62 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
                 <div className="max-w-md px-6">
                   <div className="text-lg font-black text-white">Playing in VLC</div>
                   <div className="mt-2 text-sm">The selected stream is playing externally in VLC.</div>
-                  <div className="mt-4 text-xs text-slate-500">Use Restart, Detach video or Open in VLC to control where the stream runs.</div>
+                  <div className="mt-4 text-xs text-slate-500">Use Restart, Picture-in-Picture or Open in VLC to control where the stream runs.</div>
                 </div>
               </div>
             ) : (
               <VideoSurface ref={videoSurfaceRef} src={currentUrl} title={currentChannel?.name} autoRestart={settings.autoRestart} onStatus={onStatus} />
             )}
+          </div>
+
+          <div className="mt-3 rounded-3xl border border-white/10 bg-black/20 p-3 light:border-slate-200 light:bg-slate-50">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black">TV Guide / EPG</h3>
+                <p className="text-xs text-slate-500">{settings.epgUrl?.trim() ? `Programmes are matched by tvg-id or channel name. Time mode: ${settings.epgTimezoneMode || 'auto'}${(settings.epgTimezoneMode || 'auto') === 'manual' ? ` (${settings.epgTimeOffsetMinutes || 0} min)` : ''}.` : 'Set an XMLTV EPG URL in Settings.'}</p>
+              </div>
+              {epgLoading && <RefreshCw size={16} className="animate-spin text-cyan-300" />}
+            </div>
+            <div ref={epgScrollRef} className="max-h-40 overflow-auto pr-1">
+              {!settings.epgUrl?.trim() ? (
+                <div className="rounded-2xl border border-dashed border-white/10 p-3 text-xs text-slate-500 light:border-slate-200">No EPG source configured.</div>
+              ) : epgPrograms.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/10 p-3 text-xs text-slate-500 light:border-slate-200">No programme data matched this channel yet.</div>
+              ) : (
+                <div className="space-y-2">
+                  {epgPrograms.map((program, index) => (
+                    <div
+                      key={`${program.channelId}-${program.start}-${index}`}
+                      ref={program.isNow ? nowPlayingRef : undefined}
+                      className={`rounded-2xl border p-3 text-sm transition-all ${
+                        program.isNow
+                          ? 'border-cyan-400 bg-cyan-400/15 shadow-[0_0_12px_rgba(34,211,238,0.25)] ring-1 ring-cyan-400/30'
+                          : 'border-white/10 bg-white/[0.03] light:border-slate-200 light:bg-white'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            {program.isNow && (
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-cyan-400 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-slate-950">
+                                <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-slate-950" />
+                                Live
+                              </span>
+                            )}
+                            <span className={`truncate font-black ${program.isNow ? 'text-cyan-50 light:text-cyan-900' : ''}`}>{program.title}</span>
+                          </div>
+                          {program.subtitle && <div className={`truncate text-xs ${program.isNow ? 'text-cyan-200/70 light:text-cyan-700' : 'text-slate-400 light:text-slate-500'}`}>{program.subtitle}</div>}
+                        </div>
+                        <div className={`shrink-0 text-xs font-bold ${program.isNow ? 'text-cyan-300 light:text-cyan-700' : 'text-slate-400 light:text-slate-600'}`}>
+                          {program.startLabel}{program.stopLabel ? ` - ${program.stopLabel}` : ''}
+                        </div>
+                      </div>
+                      {program.description && <div className={`mt-1 line-clamp-2 text-xs ${program.isNow ? 'text-cyan-100/60 light:text-cyan-800/70' : 'text-slate-500'}`}>{program.description}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </section>

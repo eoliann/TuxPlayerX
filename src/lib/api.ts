@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Channel, Subscription, SubscriptionInfo, AppSettings, AppInfo } from './types';
+import { Channel, EpgProgram, Subscription, SubscriptionInfo, AppSettings, AppInfo } from './types';
 
 export const api = {
   appInfo: () => invoke<AppInfo>('app_info'),
@@ -11,6 +11,7 @@ export const api = {
   getDefaultSubscription: () => invoke<Subscription | null>('get_default_subscription'),
   refreshSubscriptionInfo: (id: number) => invoke<SubscriptionInfo>('refresh_subscription_info', { id }),
   loadChannels: (id: number) => invoke<Channel[]>('load_channels', { id }),
+  loadEpgPrograms: (channel: Channel) => invoke<EpgProgram[]>('load_epg_programs', { channel }),
   resolveChannelStream: (subscriptionId: number, channel: Channel) =>
     invoke<string>('resolve_channel_stream', { subscriptionId, channel }),
   getSettings: () => invoke<AppSettings>('get_settings'),

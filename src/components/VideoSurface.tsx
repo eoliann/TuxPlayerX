@@ -148,24 +148,47 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
 
     if (isHls && Hls.isSupported()) {
       const hls = new Hls({
-        lowLatencyMode: true,
-        backBufferLength: 30,
+        lowLatencyMode: false,
+        backBufferLength: 90,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        maxBufferHole: 0.5,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 8,
+        liveDurationInfinity: true,
         manifestLoadingMaxRetry: 12,
-        manifestLoadingRetryDelay: 500,
+        manifestLoadingRetryDelay: 1000,
+        manifestLoadingMaxRetryTimeout: 30000,
         fragLoadingMaxRetry: 12,
-        fragLoadingRetryDelay: 500,
+        fragLoadingRetryDelay: 1000,
+        fragLoadingMaxRetryTimeout: 30000,
+        levelLoadingMaxRetry: 12,
+        levelLoadingRetryDelay: 1000,
+        enableWorker: true,
+        startFragPrefetch: true,
       });
       hlsRef.current = hls;
       hls.loadSource(src);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (!data.fatal) return;
         const issue = `Playback issue: ${data.details}`;
-        if (data.fatal) {
-          onStatus?.(issue);
-          setPlaybackError(issue);
-          if (autoRestart) {
-            setRestartCount((value) => value + 1);
-          }
+        onStatus?.(issue);
+        // Attempt HLS-level recovery before full restart
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            hls.startLoad();
+            return;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            hls.recoverMediaError();
+            return;
+          default:
+            break;
+        }
+        // Only trigger full restart if HLS recovery can't help
+        setPlaybackError(issue);
+        if (autoRestart) {
+          setRestartCount((value) => value + 1);
         }
       });
     } else {
@@ -203,12 +226,24 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       window.setTimeout(() => {
         if (current.toLowerCase().includes('.m3u8') && Hls.isSupported()) {
           const hls = new Hls({
-            lowLatencyMode: true,
-            backBufferLength: 30,
+            lowLatencyMode: false,
+            backBufferLength: 90,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+            maxBufferHole: 0.5,
+            liveSyncDurationCount: 3,
+            liveMaxLatencyDurationCount: 8,
+            liveDurationInfinity: true,
             manifestLoadingMaxRetry: 12,
-            manifestLoadingRetryDelay: 500,
+            manifestLoadingRetryDelay: 1000,
+            manifestLoadingMaxRetryTimeout: 30000,
             fragLoadingMaxRetry: 12,
-            fragLoadingRetryDelay: 500,
+            fragLoadingRetryDelay: 1000,
+            fragLoadingMaxRetryTimeout: 30000,
+            levelLoadingMaxRetry: 12,
+            levelLoadingRetryDelay: 1000,
+            enableWorker: true,
+            startFragPrefetch: true,
           });
           hlsRef.current = hls;
           hls.loadSource(current);
@@ -223,21 +258,49 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restartCount, src, onStatus]);
 
+  // Smart stall watchdog: only restart after sustained playback stall,
+  // NOT on transient buffering events (which are normal in HLS).
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !autoRestart) return;
-    const onProblem = () => setRestartCount((value) => value + 1);
+    let lastTime = -1;
+    let stalledSince = 0;
+    const STALL_THRESHOLD_MS = 8000; // 8 seconds of no progress = real stall
+
+    const watchdog = window.setInterval(() => {
+      if (!video.src && !video.currentSrc) return;
+      if (video.paused || video.ended) return;
+
+      const now = Date.now();
+      if (video.currentTime !== lastTime) {
+        lastTime = video.currentTime;
+        stalledSince = 0;
+        return;
+      }
+      // Time hasn't changed — track how long
+      if (stalledSince === 0) {
+        stalledSince = now;
+        return;
+      }
+      if (now - stalledSince > STALL_THRESHOLD_MS) {
+        stalledSince = 0;
+        lastTime = -1;
+        onStatus?.('Stream stalled for too long, restarting...');
+        setRestartCount((value) => value + 1);
+      }
+    }, 2000);
+
+    const onEnded = () => setRestartCount((value) => value + 1);
     const onError = () => {
       setPlaybackError('The embedded WebView player could not play this stream. If the same channel works in VLC, use Open in VLC or the local VLC bridge.');
       setNeedsUserAction(false);
-      onProblem();
+      setRestartCount((value) => value + 1);
     };
-    video.addEventListener('stalled', onProblem);
-    video.addEventListener('ended', onProblem);
+    video.addEventListener('ended', onEnded);
     video.addEventListener('error', onError);
     return () => {
-      video.removeEventListener('stalled', onProblem);
-      video.removeEventListener('ended', onProblem);
+      window.clearInterval(watchdog);
+      video.removeEventListener('ended', onEnded);
       video.removeEventListener('error', onError);
     };
   }, [autoRestart]);

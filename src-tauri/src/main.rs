@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use db::Database;
-use models::{AppInfo, AppSettings, Channel, Subscription, SubscriptionInfo};
+use models::{AppInfo, AppSettings, Channel, EpgProgram, Subscription, SubscriptionInfo};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -283,7 +283,7 @@ fn start_vlc_bridge(state: State<AppState>, url: String) -> Result<String, Strin
     }
 
     let sout = format!(
-        "#transcode{{vcodec=h264,vb=1800,acodec=mp4a,ab=128,channels=2,samplerate=44100,scodec=none}}:std{{access=livehttp{{seglen=4,delsegs=true,numsegs=6,index={index},index-url={index_url}}},mux=ts{{use-key-frames}},dst={segment}}}"
+        "#transcode{{vcodec=h264,vb=2500,acodec=mp4a,ab=192,channels=2,samplerate=44100,scodec=none}}:std{{access=livehttp{{seglen=6,delsegs=true,numsegs=15,index={index},index-url={index_url}}},mux=ts{{use-key-frames}},dst={segment}}}"
     );
 
     cmd.arg("-I")
@@ -379,6 +379,13 @@ async fn refresh_subscription_info(state: State<'_, AppState>, id: i64) -> Resul
     let info = providers::refresh_info(&sub).await.map_err(err)?;
     state.db.lock().map_err(err)?.update_subscription_info(id, &info).map_err(err)?;
     Ok(info)
+}
+
+
+#[tauri::command]
+async fn load_epg_programs(state: State<'_, AppState>, channel: Channel) -> Result<Vec<EpgProgram>, String> {
+    let settings = state.db.lock().map_err(err)?.get_settings().map_err(err)?;
+    providers::load_epg_programs(&settings.epg_url, &channel, &settings.epg_timezone_mode, settings.epg_time_offset_minutes).await.map_err(err)
 }
 
 #[tauri::command]
@@ -496,6 +503,7 @@ pub fn run() {
             load_channels,
             resolve_channel_stream,
             refresh_subscription_info,
+            load_epg_programs,
             get_settings,
             save_settings,
             open_url,

@@ -1,9 +1,9 @@
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Local, LocalResult, NaiveDateTime, TimeZone, Utc};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONNECTION, COOKIE, USER_AGENT};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
-use crate::models::{Channel, Subscription, SubscriptionInfo};
+use crate::models::{Channel, EpgProgram, Subscription, SubscriptionInfo};
 
 const MAC_USER_AGENT: &str = "Mozilla/5.0 (QtEmbedded; U; Linux; en-US) AppleWebKit/533.3 (KHTML, like Gecko) MAG254 stbapp ver: 4 rev: 2721 Mobile Safari/533.3";
 
@@ -66,12 +66,14 @@ fn parse_m3u(body: &str) -> Vec<Channel> {
     let mut current_name: Option<String> = None;
     let mut current_logo: Option<String> = None;
     let mut current_group: Option<String> = None;
+    let mut current_epg_id: Option<String> = None;
 
     for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if line.starts_with("#EXTINF") {
             current_name = Some(line.split_once(',').map(|(_, name)| name.trim().to_string()).unwrap_or_else(|| "Unnamed channel".to_string()));
             current_logo = extract_attr(line, "tvg-logo");
             current_group = extract_attr(line, "group-title");
+            current_epg_id = extract_attr(line, "tvg-id").or_else(|| extract_attr(line, "tvg-name"));
         } else if !line.starts_with('#') {
             let idx = channels.len() + 1;
             channels.push(Channel {
@@ -81,6 +83,7 @@ fn parse_m3u(body: &str) -> Vec<Channel> {
                 logo: current_logo.take(),
                 group: current_group.take(),
                 raw_cmd: None,
+                epg_id: current_epg_id.take(),
             });
         }
     }
@@ -324,7 +327,12 @@ async fn load_mac_channels(sub: &Subscription) -> anyhow::Result<Vec<Channel>> {
         let group = group_id.as_ref().and_then(|id| genres.get(id).cloned()).or_else(|| item.get("category_name").and_then(value_to_string)).or_else(|| Some("Live TV".to_string()));
         let logo = item.get("logo").or_else(|| item.get("icon")).and_then(value_to_string);
         let id = item.get("id").and_then(value_to_string).unwrap_or_else(|| format!("mac-{}", idx + 1));
-        out.push(Channel { id, name, stream_url: clean_stream_url(&raw_cmd), logo, group, raw_cmd: Some(raw_cmd) });
+        let epg_id = item.get("xmltv_id")
+            .or_else(|| item.get("tvg_id"))
+            .or_else(|| item.get("epg_id"))
+            .or_else(|| item.get("id"))
+            .and_then(value_to_string);
+        out.push(Channel { id, name, stream_url: clean_stream_url(&raw_cmd), logo, group, raw_cmd: Some(raw_cmd), epg_id });
     }
 
     if out.is_empty() {
@@ -391,6 +399,183 @@ async fn refresh_mac_info(sub: &Subscription) -> anyhow::Result<SubscriptionInfo
         max_connections: max,
         message: Some("MAC account info loaded from the authorized portal response where available.".to_string()),
     })
+}
+
+
+pub async fn load_epg_programs(
+    epg_url: &str,
+    channel: &Channel,
+    timezone_mode: &str,
+    manual_offset_minutes: i64,
+) -> anyhow::Result<Vec<EpgProgram>> {
+    let source = epg_url.trim();
+    if source.is_empty() {
+        anyhow::bail!("Set an XMLTV EPG URL in Settings first.");
+    }
+
+    let xml = read_source(source).await?;
+    parse_xmltv_programs(&xml, channel, timezone_mode, manual_offset_minutes)
+}
+
+fn normalize_epg_key(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace('&', "and")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn node_text(node: roxmltree::Node<'_, '_>) -> Option<String> {
+    node.text()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn first_child_text(node: roxmltree::Node<'_, '_>, tag: &str) -> Option<String> {
+    node.children()
+        .find(|child| child.is_element() && child.tag_name().name() == tag)
+        .and_then(node_text)
+}
+
+fn local_naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt.with_timezone(&Utc),
+        LocalResult::Ambiguous(earliest, _) => earliest.with_timezone(&Utc),
+        LocalResult::None => Utc.from_utc_datetime(&naive),
+    }
+}
+
+fn parse_compact_xmltv_naive(raw: &str) -> Option<NaiveDateTime> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() { return None; }
+    let compact = trimmed.split_whitespace().next().unwrap_or(trimmed);
+    let core = compact.chars().take(14).collect::<String>();
+    NaiveDateTime::parse_from_str(&core, "%Y%m%d%H%M%S").ok()
+}
+
+fn parse_xmltv_datetime_auto(raw: &str) -> Option<DateTime<Utc>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() { return None; }
+
+    if let Ok(dt) = DateTime::parse_from_str(trimmed, "%Y%m%d%H%M%S %z") {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(dt) = DateTime::parse_from_str(trimmed, "%Y%m%d%H%M%S%z") {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    // XMLTV sources without an explicit timezone are normally meant to be read as local guide time.
+    parse_compact_xmltv_naive(trimmed).map(local_naive_to_utc)
+}
+
+fn parse_xmltv_datetime_for_mode(raw: &str, timezone_mode: &str, manual_offset_minutes: i64) -> Option<DateTime<Utc>> {
+    let normalized_mode = timezone_mode.trim().to_ascii_lowercase();
+    let mut dt = if normalized_mode == "local" {
+        parse_compact_xmltv_naive(raw).map(local_naive_to_utc)?
+    } else {
+        parse_xmltv_datetime_auto(raw)?
+    };
+
+    if normalized_mode == "manual" && manual_offset_minutes != 0 {
+        dt = dt + ChronoDuration::minutes(manual_offset_minutes);
+    }
+
+    Some(dt)
+}
+
+fn epg_label(dt: &DateTime<Utc>) -> String {
+    dt.with_timezone(&Local).format("%H:%M").to_string()
+}
+
+fn parse_xmltv_programs(xml: &str, channel: &Channel, timezone_mode: &str, manual_offset_minutes: i64) -> anyhow::Result<Vec<EpgProgram>> {
+    let doc = roxmltree::Document::parse(xml)?;
+    let mut candidate_keys = std::collections::HashSet::new();
+
+    if let Some(epg_id) = channel.epg_id.as_deref() {
+        if !epg_id.trim().is_empty() {
+            candidate_keys.insert(normalize_epg_key(epg_id));
+        }
+    }
+    candidate_keys.insert(normalize_epg_key(&channel.id));
+    candidate_keys.insert(normalize_epg_key(&channel.name));
+
+    let mut matched_channel_ids = std::collections::HashSet::new();
+    for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "channel") {
+        if let Some(id) = node.attribute("id") {
+            if candidate_keys.contains(&normalize_epg_key(id)) {
+                matched_channel_ids.insert(id.to_string());
+                continue;
+            }
+        }
+
+        let mut display_match = false;
+        for display in node.children().filter(|child| child.is_element() && child.tag_name().name() == "display-name") {
+            if let Some(text) = node_text(display) {
+                if candidate_keys.contains(&normalize_epg_key(&text)) {
+                    display_match = true;
+                    break;
+                }
+            }
+        }
+        if display_match {
+            if let Some(id) = node.attribute("id") {
+                matched_channel_ids.insert(id.to_string());
+            }
+        }
+    }
+
+    if matched_channel_ids.is_empty() {
+        if let Some(epg_id) = channel.epg_id.as_deref() {
+            if !epg_id.trim().is_empty() {
+                matched_channel_ids.insert(epg_id.to_string());
+            }
+        }
+    }
+
+    let now = Utc::now();
+    let min_time = now - ChronoDuration::hours(6);
+    let max_time = now + ChronoDuration::hours(72);
+    let mut programs = Vec::new();
+
+    for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "programme") {
+        let programme_channel = node.attribute("channel").unwrap_or_default();
+        let channel_matches = matched_channel_ids.contains(programme_channel)
+            || candidate_keys.contains(&normalize_epg_key(programme_channel));
+        if !channel_matches { continue; }
+
+        let Some(start_dt) = node.attribute("start").and_then(|raw| parse_xmltv_datetime_for_mode(raw, timezone_mode, manual_offset_minutes)) else { continue; };
+        let stop_dt = node.attribute("stop").and_then(|raw| parse_xmltv_datetime_for_mode(raw, timezone_mode, manual_offset_minutes));
+        if start_dt > max_time { continue; }
+        if let Some(stop) = stop_dt {
+            if stop < min_time { continue; }
+        } else if start_dt < min_time {
+            continue;
+        }
+
+        let title = first_child_text(node, "title").unwrap_or_else(|| "Untitled programme".to_string());
+        let subtitle = first_child_text(node, "sub-title");
+        let description = first_child_text(node, "desc");
+        let is_now = start_dt <= now && stop_dt.as_ref().map(|stop| *stop >= now).unwrap_or(false);
+        let stop_label = stop_dt.as_ref().map(epg_label);
+        let stop = stop_dt.as_ref().map(|stop| stop.to_rfc3339());
+        programs.push(EpgProgram {
+            channel_id: programme_channel.to_string(),
+            title,
+            subtitle,
+            description,
+            start: start_dt.to_rfc3339(),
+            stop,
+            start_label: epg_label(&start_dt),
+            stop_label,
+            is_now,
+        });
+    }
+
+    programs.sort_by(|a, b| a.start.cmp(&b.start));
+    programs.truncate(60);
+    Ok(programs)
 }
 
 fn first_value(payloads: &[Value], keys: &[&str]) -> Option<String> {

@@ -3055,6 +3055,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+
+[[package]]
 name = "rusqlite"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4377,13 +4383,14 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tuxplayerx"
-version = "2.0.0"
+version = "2.0.3"
 dependencies = [
  "anyhow",
  "chrono",
  "dirs-next",
  "open",
  "reqwest 0.12.28",
+ "roxmltree",
  "rusqlite",
  "serde",
  "serde_json",
