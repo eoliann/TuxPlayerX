@@ -14,7 +14,11 @@ const defaultSettings: AppSettings = {
   autoLoadDefault: true,
   autoRestart: true,
   externalPlayerCommand: 'vlc',
+<<<<<<< HEAD
   epgUrl: 'https://iptv-epg.org/files/epg-ro.xml',
+=======
+  epgUrl: '',
+>>>>>>> 4a6b9a44dd637168632007849f9929d8fdae9683
   epgTimezoneMode: 'auto',
   epgTimeOffsetMinutes: 0,
 };

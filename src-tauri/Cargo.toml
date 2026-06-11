@@ -1,6 +1,10 @@
 [package]
 name = "tuxplayerx"
+<<<<<<< HEAD
 version = "2.0.3"
+=======
+version = "2.0.1"
+>>>>>>> 4a6b9a44dd637168632007849f9929d8fdae9683
 description = "TuxPlayerX desktop streaming player"
 authors = ["eoliann"]
 edition = "2021"

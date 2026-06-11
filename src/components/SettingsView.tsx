@@ -59,7 +59,11 @@ export function SettingsView({ settings, onSettings, onStatus }: Props) {
             value={settings.epgUrl}
             onChange={(e) => update({ epgUrl: e.target.value })}
             className="field mt-2"
+<<<<<<< HEAD
             placeholder="https://iptv-epg.org/files/epg-ro.xml"
+=======
+            placeholder="https://example.com/epg.xml or local path"
+>>>>>>> 4a6b9a44dd637168632007849f9929d8fdae9683
           />
           <p className="mt-2 text-xs text-slate-500">Optional. Used to show TV programme guide for the selected channel. XMLTV channel IDs are matched against M3U tvg-id or channel name.</p>
         </label>

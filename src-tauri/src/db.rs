@@ -57,7 +57,11 @@ impl Database {
             ("auto_load_default", "true"),
             ("auto_restart", "true"),
             ("external_player_command", "vlc"),
+<<<<<<< HEAD
             ("epg_url", "https://iptv-epg.org/files/epg-ro.xml"),
+=======
+            ("epg_url", ""),
+>>>>>>> 4a6b9a44dd637168632007849f9929d8fdae9683
             ("epg_timezone_mode", "auto"),
             ("epg_time_offset_minutes", "0"),
         ];
@@ -192,7 +196,11 @@ impl Database {
             auto_load_default: get("auto_load_default", "true")? == "true",
             auto_restart: get("auto_restart", "true")? == "true",
             external_player_command: get("external_player_command", "vlc")?,
+<<<<<<< HEAD
             epg_url: get("epg_url", "https://iptv-epg.org/files/epg-ro.xml")?,
+=======
+            epg_url: get("epg_url", "")?,
+>>>>>>> 4a6b9a44dd637168632007849f9929d8fdae9683
             epg_timezone_mode: get("epg_timezone_mode", "auto")?,
             epg_time_offset_minutes: get("epg_time_offset_minutes", "0")?.parse().unwrap_or(0),
         })

@@ -1,7 +1,11 @@
 {
   "name": "tuxplayerx-tauri",
   "private": true,
+<<<<<<< HEAD
   "version": "2.0.3",
+=======
+  "version": "2.0.1",
+>>>>>>> 4a6b9a44dd637168632007849f9929d8fdae9683
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",

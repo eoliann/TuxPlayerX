@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+=======
+import { useEffect, useMemo, useRef, useState } from 'react';
+>>>>>>> 4a6b9a44dd637168632007849f9929d8fdae9683
 import { CalendarDays, ExternalLink, Maximize2, Play, RefreshCw, Search } from 'lucide-react';
 import { Channel, EpgProgram, AppSettings, Subscription } from '../lib/types';
 import { api, isTauriRuntime } from '../lib/api';
@@ -305,7 +309,11 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
               </div>
               {epgLoading && <RefreshCw size={16} className="animate-spin text-cyan-300" />}
             </div>
+<<<<<<< HEAD
             <div ref={epgScrollRef} className="max-h-40 overflow-auto pr-1">
+=======
+            <div className="max-h-40 overflow-auto pr-1">
+>>>>>>> 4a6b9a44dd637168632007849f9929d8fdae9683
               {!settings.epgUrl?.trim() ? (
                 <div className="rounded-2xl border border-dashed border-white/10 p-3 text-xs text-slate-500 light:border-slate-200">No EPG source configured.</div>
               ) : epgPrograms.length === 0 ? (
@@ -313,6 +321,7 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
               ) : (
                 <div className="space-y-2">
                   {epgPrograms.map((program, index) => (
+<<<<<<< HEAD
                     <div
                       key={`${program.channelId}-${program.start}-${index}`}
                       ref={program.isNow ? nowPlayingRef : undefined}
@@ -340,6 +349,19 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
                         </div>
                       </div>
                       {program.description && <div className={`mt-1 line-clamp-2 text-xs ${program.isNow ? 'text-cyan-100/60 light:text-cyan-800/70' : 'text-slate-500'}`}>{program.description}</div>}
+=======
+                    <div key={`${program.channelId}-${program.start}-${index}`} className={`rounded-2xl border p-3 text-sm ${program.isNow ? 'border-cyan-400/60 bg-cyan-400/10' : 'border-white/10 bg-white/[0.03] light:border-slate-200 light:bg-white'}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate font-black">{program.title}</div>
+                          {program.subtitle && <div className="truncate text-xs text-slate-400 light:text-slate-500">{program.subtitle}</div>}
+                        </div>
+                        <div className="shrink-0 text-xs font-bold text-slate-400 light:text-slate-600">
+                          {program.startLabel}{program.stopLabel ? ` - ${program.stopLabel}` : ''}
+                        </div>
+                      </div>
+                      {program.description && <div className="mt-1 line-clamp-2 text-xs text-slate-500">{program.description}</div>}
+>>>>>>> 4a6b9a44dd637168632007849f9929d8fdae9683
                     </div>
                   ))}
                 </div>
