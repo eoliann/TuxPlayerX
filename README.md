@@ -46,7 +46,7 @@ It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a
   Subscriptions
   <br>
   <img src="./screenshots/2.0.3/TuxPlayerX-203-Subcriptions.png" alt="TuxPlayerX" width="45%">
-  <img src="./screenshots/2.0.3/TuxPlayerX-203-Subcriptions2.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.3/TuxPlayerX-203-Subscriptions2.png" alt="TuxPlayerX" width="45%">
 </p>
 <p align="center">
   Settings
