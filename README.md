@@ -34,6 +34,33 @@ It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a
 
 > Legal notice: TuxPlayerX is only a media player. It does not provide, sell, host, distribute or promote IPTV subscriptions, playlists, MAC portal credentials, TV channels, movies, series or any streaming content. Use only sources you are authorized to access.
 
+## Galery
+
+<p align="center">
+  Player
+  <br>
+  <img src="./screenshot/2.0.3/dashboard.png" alt="Eoliann Windows Tools 2" width="45%">
+  <img src="./screenshot/2.0.3/info.png" alt="Eoliann Windows Tools 2" width="45%">
+</p>
+<p align="center">
+  Subscriptions
+  <br>
+  <img src="./screenshot/2.0.3/tools-1.png" alt="Eoliann Windows Tools 2" width="45%">
+  <img src="./screenshot/2.0.3/tools-2.png" alt="Eoliann Windows Tools 2" width="45%">
+</p>
+<p align="center">
+  Settings
+  <br>
+  <img src="./screenshot/2.0.3/settings-1.png" alt="Eoliann Windows Tools 2" width="45%">
+  <img src="./screenshot/2.0.3/settings-2.png" alt="Eoliann Windows Tools 2" width="45%">
+</p>
+<p align="center">
+  About
+  <br>
+  <img src="./screenshot/2.0.3/about-1.png" alt="Eoliann Windows Tools 2" width="45%">
+  <img src="./screenshot/2.0.3/about-2.png" alt="Eoliann Windows Tools 2" width="45%">
+</p>
+
 ## Features
 
 - Modern TuxPulse2-style interface
