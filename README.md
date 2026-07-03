@@ -39,26 +39,26 @@ It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a
 <p align="center">
   Player
   <br>
-  <img src="./screenshot/2.0.3/TuxPlayerX-203-Player.png" alt="TuxPlayerX" width="45%">
-  <img src="./screenshot/2.0.3/TuxPlayerX-203-Player2.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.3/TuxPlayerX-203-Player.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.3/TuxPlayerX-203-Player2.png" alt="TuxPlayerX" width="45%">
 </p>
 <p align="center">
   Subscriptions
   <br>
-  <img src="./screenshot/2.0.3/TuxPlayerX-203-Subcriptions.png" alt="TuxPlayerX" width="45%">
-  <img src="./screenshot/2.0.3/TuxPlayerX-203-Subcriptions2.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.3/TuxPlayerX-203-Subcriptions.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.3/TuxPlayerX-203-Subcriptions2.png" alt="TuxPlayerX" width="45%">
 </p>
 <p align="center">
   Settings
   <br>
-  <img src="./screenshot/2.0.3/TuxPlayerX-203-Settings.png" alt="TuxPlayerX" width="45%">
-  <img src="./screenshot/2.0.3/TuxPlayerX-203-Settings2.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.3/TuxPlayerX-203-Settings.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.3/TuxPlayerX-203-Settings2.png" alt="TuxPlayerX" width="45%">
 </p>
 <p align="center">
   About
   <br>
-  <img src="./screenshot/2.0.3/TuxPlayerX-203-About.png" alt="TuxPlayerX" width="45%">
-  <img src="./screenshot/2.0.3/TuxPlayerX-203-About2.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.3/TuxPlayerX-203-About.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.3/TuxPlayerX-203-About2.png" alt="TuxPlayerX" width="45%">
 </p>
 
 ## Features
