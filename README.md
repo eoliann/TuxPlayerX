@@ -79,6 +79,14 @@ It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a
 - Channel lists are cached locally for 6 hours; the refresh button downloads them again
 - XMLTV guide is downloaded once and kept in memory (refreshed every 6 hours or from the EPG button)
 - MAC portal sessions are reused between channel switches for faster zapping
+- Movies & Series (VOD) for Xtream subscriptions and MAC portals: categories, posters, search, seasons/episodes and resume where you left off
+- Full TV guide grid (press G) with click-to-watch
+- Catch-up / TV archive: replay past programmes on channels where the provider keeps an archive (Xtream `tv_archive` or M3U `catchup` attributes)
+- Audio track and subtitle selection (A / C keys), with the preferred language remembered
+- Volume and mute remembered between sessions
+- Subscription expiry warning (7 days before) with automatic info refresh
+- Several EPG sources (one per line), including compressed `.xml.gz` guides
+- Backup & restore of subscriptions, favorites, recents and settings
 - Subscription info refresh where supported by the provider
 - HTML5/HLS video playback in the app window
 - Detachable resizable Picture-in-Picture window

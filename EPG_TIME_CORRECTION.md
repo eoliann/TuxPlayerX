@@ -20,7 +20,7 @@ Examples:
 TuxPlayerX now pre-fills the EPG field with:
 
 ```text
-https://iptv-epg.org/files/epg-ro.xml
+https://epgshare01.online/epgshare01/epg_ripper_RO1.xml.gz
 ```
 
 The value is only a default. Users can change it at any time from **Settings → EPG / XMLTV URL**.

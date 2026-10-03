@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
-use crate::models::{AppSettings, Channel, Subscription, SubscriptionInfo};
+use crate::models::{AppSettings, BackupFile, BackupSubscription, Channel, ImportSummary, Subscription, SubscriptionInfo};
+
+/// Default XMLTV guide for Romanian channels (compressed, ~2 MB).
+pub const DEFAULT_EPG_URL: &str = "https://epgshare01.online/epgshare01/epg_ripper_RO1.xml.gz";
+/// Previous default; it started returning "No Data" for every programme.
+const OLD_DEFAULT_EPG_URL: &str = "https://iptv-epg.org/files/epg-ro.xml";
 
 pub struct Database {
     // A single long-lived connection; access is already serialized by the Mutex in AppState.
@@ -74,7 +79,7 @@ impl Database {
             ("auto_load_default", "true"),
             ("auto_restart", "true"),
             ("external_player_command", "vlc"),
-            ("epg_url", "https://iptv-epg.org/files/epg-ro.xml"),
+            ("epg_url", DEFAULT_EPG_URL),
             ("epg_timezone_mode", "auto"),
             ("epg_time_offset_minutes", "0"),
             ("resume_last_channel", "true"),
@@ -86,11 +91,11 @@ impl Database {
             )?;
         }
 
-        // Migration for older installs where the EPG URL key already exists but is empty.
-        // Keeps any user-customized non-empty EPG URL unchanged.
+        // Migration for older installs where the EPG URL is empty or still the old default (which now
+        // only returns "No Data"). Keeps any user-customized EPG URL unchanged.
         conn.execute(
-            "UPDATE settings SET value = ?1 WHERE key = 'epg_url' AND TRIM(value) = ''",
-            params!["https://iptv-epg.org/files/epg-ro.xml"],
+            "UPDATE settings SET value = ?1 WHERE key = 'epg_url' AND (TRIM(value) = '' OR TRIM(value) = ?2)",
+            params![DEFAULT_EPG_URL, OLD_DEFAULT_EPG_URL],
         )?;
 
         Ok(())
@@ -207,6 +212,92 @@ impl Database {
         Ok(())
     }
 
+    pub fn export_backup(&self) -> anyhow::Result<BackupFile> {
+        let mut subscriptions = Vec::new();
+        for subscription in self.list_subscriptions()? {
+            let id = subscription.id.unwrap_or_default();
+            subscriptions.push(BackupSubscription {
+                favorites: self.list_favorites(id)?,
+                recents: self.list_recents(id)?,
+                subscription,
+            });
+        }
+        Ok(BackupFile {
+            app: "TuxPlayerX".to_string(),
+            format_version: 1,
+            exported_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            settings: serde_json::to_value(self.get_settings()?)?,
+            subscriptions,
+        })
+    }
+
+    /// Merges a backup into the current data: subscriptions that already exist (same source) are reused,
+    /// favorites and recents are added, and settings from the backup replace the current ones.
+    pub fn import_backup(&self, backup: &BackupFile) -> anyhow::Result<ImportSummary> {
+        if backup.app != "TuxPlayerX" {
+            anyhow::bail!("This file is not a TuxPlayerX backup.");
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let existing = self.list_subscriptions()?;
+        let has_default = existing.iter().any(|sub| sub.is_default);
+        let mut added = 0;
+        let mut reused = 0;
+        let mut favorites = 0;
+
+        for item in &backup.subscriptions {
+            let source = &item.subscription;
+            let same_source = |sub: &&Subscription| {
+                sub.sub_type == source.sub_type
+                    && sub.url.as_deref().map(str::trim) == source.url.as_deref().map(str::trim)
+                    && sub.portal_url.as_deref().map(str::trim) == source.portal_url.as_deref().map(str::trim)
+                    && sub.mac_address.as_deref().map(|m| m.trim().to_uppercase()) == source.mac_address.as_deref().map(|m| m.trim().to_uppercase())
+            };
+            let id = match existing.iter().find(same_source).and_then(|sub| sub.id) {
+                Some(id) => {
+                    reused += 1;
+                    id
+                }
+                None => {
+                    let mut copy = source.clone();
+                    copy.id = None;
+                    // Never let an imported subscription steal the default flag from an existing one.
+                    copy.is_default = copy.is_default && !has_default;
+                    added += 1;
+                    self.save_subscription(&copy)?
+                }
+            };
+            for channel_id in &item.favorites {
+                favorites += self.conn.execute(
+                    "INSERT OR IGNORE INTO favorites(subscription_id, channel_id, added_at) VALUES(?1, ?2, ?3)",
+                    params![id, channel_id, Utc::now().timestamp()],
+                )?;
+            }
+            // Insert oldest first so the most recent entry keeps the newest timestamp.
+            let base = Utc::now().timestamp_millis() - item.recents.len() as i64;
+            for (offset, channel_id) in item.recents.iter().rev().enumerate() {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO recents(subscription_id, channel_id, watched_at) VALUES(?1, ?2, ?3)",
+                    params![id, channel_id, base + offset as i64],
+                )?;
+            }
+        }
+
+        // Overlay the backed-up settings on the current ones so unknown or missing keys are tolerated.
+        let mut settings = serde_json::to_value(self.get_settings()?)?;
+        if let (Some(target), Some(source)) = (settings.as_object_mut(), backup.settings.as_object()) {
+            for (key, value) in source {
+                if target.contains_key(key) {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        let settings: AppSettings = serde_json::from_value(settings)?;
+        self.save_settings(&settings)?;
+        tx.commit()?;
+
+        Ok(ImportSummary { added_subscriptions: added, existing_subscriptions: reused, favorites, settings })
+    }
+
     pub fn list_favorites(&self, subscription_id: i64) -> anyhow::Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT channel_id FROM favorites WHERE subscription_id = ?1 ORDER BY added_at ASC")?;
         let rows = stmt.query_map(params![subscription_id], |row| row.get(0))?;
@@ -285,7 +376,7 @@ impl Database {
             auto_load_default: get("auto_load_default", "true")? == "true",
             auto_restart: get("auto_restart", "true")? == "true",
             external_player_command: get("external_player_command", "vlc")?,
-            epg_url: get("epg_url", "https://iptv-epg.org/files/epg-ro.xml")?,
+            epg_url: get("epg_url", DEFAULT_EPG_URL)?,
             epg_timezone_mode: get("epg_timezone_mode", "auto")?,
             epg_time_offset_minutes: get("epg_time_offset_minutes", "0")?.parse().unwrap_or(0),
             resume_last_channel: get("resume_last_channel", "true")? == "true",
@@ -332,4 +423,56 @@ fn row_to_subscription(row: &rusqlite::Row<'_>) -> rusqlite::Result<Subscription
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db(name: &str) -> (Database, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("tuxplayerx-db-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        (Database::new(dir.join("test.sqlite3")).unwrap(), dir)
+    }
+
+    fn m3u(name: &str, url: &str, is_default: bool) -> Subscription {
+        Subscription {
+            id: None, name: name.into(), sub_type: "m3u".into(), url: Some(url.into()), portal_url: None,
+            mac_address: None, username: None, password: None, is_default, expires_at: None,
+            active_connections: None, max_connections: None, created_at: None, updated_at: None,
+        }
+    }
+
+    #[test]
+    fn backup_round_trip_merges_without_duplicates() {
+        let (source, source_dir) = temp_db("source");
+        let id = source.save_subscription(&m3u("Home", "http://a/list.m3u", true)).unwrap();
+        source.toggle_favorite(id, "m3u-abc").unwrap();
+        source.record_recent(id, "m3u-old").unwrap();
+        source.record_recent(id, "m3u-new").unwrap();
+        let mut settings = source.get_settings().unwrap();
+        settings.theme = "light".into();
+        source.save_settings(&settings).unwrap();
+        let backup: BackupFile = serde_json::from_str(&serde_json::to_string(&source.export_backup().unwrap()).unwrap()).unwrap();
+
+        let (target, target_dir) = temp_db("target");
+        let existing = target.save_subscription(&m3u("Mine", "http://a/list.m3u", true)).unwrap();
+        target.save_subscription(&m3u("Other", "http://b/list.m3u", false)).unwrap();
+
+        let summary = target.import_backup(&backup).unwrap();
+        assert_eq!(summary.added_subscriptions, 0);
+        assert_eq!(summary.existing_subscriptions, 1);
+        assert_eq!(target.list_subscriptions().unwrap().len(), 2);
+        assert_eq!(target.list_favorites(existing).unwrap(), vec!["m3u-abc"]);
+        assert_eq!(target.list_recents(existing).unwrap(), vec!["m3u-new", "m3u-old"]);
+        assert_eq!(target.get_settings().unwrap().theme, "light");
+
+        // Importing again changes nothing.
+        let again = target.import_backup(&backup).unwrap();
+        assert_eq!(again.favorites, 0);
+        assert_eq!(target.list_subscriptions().unwrap().len(), 2);
+
+        let _ = std::fs::remove_dir_all(source_dir);
+        let _ = std::fs::remove_dir_all(target_dir);
+    }
 }

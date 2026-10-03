@@ -3,6 +3,7 @@
 mod db;
 mod models;
 mod providers;
+mod xtream;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -17,7 +18,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use db::Database;
-use models::{AppInfo, AppSettings, Channel, ChannelLoadResult, EpgChannelKey, EpgNow, EpgProgram, Subscription, SubscriptionInfo};
+use models::{AppInfo, AppSettings, BackupFile, Channel, ChannelLoadResult, EpgChannelKey, EpgGridItem, EpgNow, EpgProgram, ImportSummary, SeriesInfo, Subscription, SubscriptionInfo, VodCategory, VodDetails, VodItem, VodPage, VodPlayRequest};
 
 /// Channel lists are served from the local cache for this long before being downloaded again.
 const CHANNEL_CACHE_MAX_AGE_SECS: i64 = 6 * 60 * 60;
@@ -380,6 +381,25 @@ async fn load_channels(state: State<'_, AppState>, id: i64, force: Option<bool>)
     Ok(ChannelLoadResult { channels, from_cache: false, fetched_at })
 }
 
+/// Writes a backup JSON file to the Downloads folder (or home as a fallback) and returns its path.
+#[tauri::command]
+fn export_backup(state: State<AppState>) -> Result<String, String> {
+    let backup = state.db.lock().map_err(err)?.export_backup().map_err(err)?;
+    let folder = dirs_next::download_dir()
+        .or_else(dirs_next::home_dir)
+        .ok_or_else(|| "Could not find the Downloads folder".to_string())?;
+    let file_name = format!("TuxPlayerX-backup-{}.json", chrono::Local::now().format("%Y%m%d-%H%M"));
+    let path = folder.join(file_name);
+    fs::write(&path, serde_json::to_string_pretty(&backup).map_err(err)?).map_err(err)?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+fn import_backup(state: State<AppState>, content: String) -> Result<ImportSummary, String> {
+    let backup: BackupFile = serde_json::from_str(&content).map_err(|e| format!("Invalid backup file: {e}"))?;
+    state.db.lock().map_err(err)?.import_backup(&backup).map_err(err)
+}
+
 #[tauri::command]
 fn list_favorites(state: State<AppState>, subscription_id: i64) -> Result<Vec<String>, String> {
     state.db.lock().map_err(err)?.list_favorites(subscription_id).map_err(err)
@@ -405,6 +425,54 @@ async fn resolve_channel_stream(state: State<'_, AppState>, subscription_id: i64
     let sub = { state.db.lock().map_err(err)?.get_subscription(subscription_id).map_err(err)? };
     let sub = sub.ok_or_else(|| "Subscription not found".to_string())?;
     providers::resolve_channel_stream(&sub, &channel).await.map_err(err)
+}
+
+fn subscription_by_id(state: &State<'_, AppState>, id: i64) -> Result<Subscription, String> {
+    state.db.lock().map_err(err)?.get_subscription(id).map_err(err)?.ok_or_else(|| "Subscription not found".to_string())
+}
+
+#[tauri::command]
+async fn load_epg_grid(state: State<'_, AppState>, channels: Vec<EpgChannelKey>, from: i64, to: i64) -> Result<std::collections::HashMap<String, Vec<EpgGridItem>>, String> {
+    let settings = state.db.lock().map_err(err)?.get_settings().map_err(err)?;
+    providers::load_epg_grid(&settings.epg_url, &channels, from, to, &settings.epg_timezone_mode, settings.epg_time_offset_minutes).await.map_err(err)
+}
+
+/// `start` / `stop` are Unix timestamps (seconds) of the programme to replay.
+#[tauri::command]
+async fn resolve_catchup_stream(channel: Channel, start: i64, stop: i64) -> Result<String, String> {
+    let start = chrono::DateTime::from_timestamp(start, 0).ok_or("Invalid start time")?;
+    let stop = chrono::DateTime::from_timestamp(stop, 0).ok_or("Invalid stop time")?;
+    providers::resolve_catchup_stream(&channel, start, stop).await.map_err(err)
+}
+
+#[tauri::command]
+async fn vod_categories(state: State<'_, AppState>, subscription_id: i64, kind: String) -> Result<Vec<VodCategory>, String> {
+    let sub = subscription_by_id(&state, subscription_id)?;
+    providers::vod_categories(&sub, &kind).await.map_err(err)
+}
+
+#[tauri::command]
+async fn vod_items(state: State<'_, AppState>, subscription_id: i64, kind: String, category_id: String, page: Option<u32>, force: Option<bool>) -> Result<VodPage, String> {
+    let sub = subscription_by_id(&state, subscription_id)?;
+    providers::vod_items(&sub, &kind, &category_id, page.unwrap_or(1), force.unwrap_or(false)).await.map_err(err)
+}
+
+#[tauri::command]
+async fn vod_details(state: State<'_, AppState>, subscription_id: i64, item: VodItem) -> Result<VodDetails, String> {
+    let sub = subscription_by_id(&state, subscription_id)?;
+    providers::vod_details(&sub, &item).await.map_err(err)
+}
+
+#[tauri::command]
+async fn series_info(state: State<'_, AppState>, subscription_id: i64, item: VodItem) -> Result<SeriesInfo, String> {
+    let sub = subscription_by_id(&state, subscription_id)?;
+    providers::series_info(&sub, &item).await.map_err(err)
+}
+
+#[tauri::command]
+async fn resolve_vod_stream(state: State<'_, AppState>, subscription_id: i64, request: VodPlayRequest) -> Result<String, String> {
+    let sub = subscription_by_id(&state, subscription_id)?;
+    providers::resolve_vod_stream(&sub, &request).await.map_err(err)
 }
 
 #[tauri::command]
@@ -546,6 +614,15 @@ pub fn run() {
             refresh_subscription_info,
             load_epg_programs,
             load_epg_now,
+            load_epg_grid,
+            resolve_catchup_stream,
+            vod_categories,
+            vod_items,
+            vod_details,
+            series_info,
+            resolve_vod_stream,
+            export_backup,
+            import_backup,
             list_favorites,
             toggle_favorite,
             list_recents,

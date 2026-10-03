@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { Moon, Save, Sun } from 'lucide-react';
+import { Download, FolderOpen, Moon, Save, Sun, Upload } from 'lucide-react';
 import { AppSettings } from '../lib/types';
 import { api } from '../lib/api';
 
 interface Props {
   settings: AppSettings;
   onSettings: (settings: AppSettings) => void;
+  /** Called after a backup import so subscription lists are reloaded. */
+  onDataChanged: () => void;
   onStatus: (status: string) => void;
 }
 
-export function SettingsView({ settings: savedSettings, onSettings, onStatus }: Props) {
+export function SettingsView({ settings: savedSettings, onSettings, onDataChanged, onStatus }: Props) {
   // Edits stay local until saved, so the player does not react (e.g. reload the EPG) on every keystroke.
   const [settings, setSettings] = useState<AppSettings>(savedSettings);
   const dirtyRef = useRef(false);
@@ -22,6 +24,33 @@ export function SettingsView({ settings: savedSettings, onSettings, onStatus }: 
     setSettings((prev) => ({ ...prev, ...patch }));
     // Theme previews immediately; everything else applies on save.
     if (patch.theme) onSettings({ ...savedSettings, theme: patch.theme });
+  };
+
+  const [lastBackupPath, setLastBackupPath] = useState('');
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+
+  const exportBackup = async () => {
+    try {
+      const path = await api.exportBackup();
+      setLastBackupPath(path);
+      onStatus(`Backup saved: ${path}`);
+    } catch (err) {
+      onStatus(`Backup failed: ${String(err)}`);
+    }
+  };
+
+  const importBackup = async (file: File) => {
+    try {
+      const summary = await api.importBackup(await file.text());
+      dirtyRef.current = false;
+      onSettings(summary.settings);
+      onDataChanged();
+      onStatus(
+        `Backup imported: ${summary.addedSubscriptions} new subscription(s), ${summary.existingSubscriptions} already present, ${summary.favorites} favorite(s) added.`,
+      );
+    } catch (err) {
+      onStatus(`Import failed: ${String(err)}`);
+    }
   };
 
   const save = async () => {
@@ -77,14 +106,15 @@ export function SettingsView({ settings: savedSettings, onSettings, onStatus }: 
         </label>
 
         <label className="block">
-          <span className="label">EPG / XMLTV URL</span>
-          <input
+          <span className="label">EPG / XMLTV sources</span>
+          <textarea
             value={settings.epgUrl}
             onChange={(e) => update({ epgUrl: e.target.value })}
-            className="field mt-2"
-            placeholder="https://iptv-epg.org/files/epg-ro.xml"
+            className="field mt-2 min-h-24 resize-y font-mono text-xs"
+            placeholder={'https://epgshare01.online/epgshare01/epg_ripper_RO1.xml.gz\nhttps://www.open-epg.com/files/romania1.xml.gz'}
+            spellCheck={false}
           />
-          <p className="mt-2 text-xs text-slate-500">Optional. Used to show TV programme guide for the selected channel. XMLTV channel IDs are matched against M3U tvg-id or channel name.</p>
+          <p className="mt-2 text-xs text-slate-500">Optional. One URL or local file per line; .xml and compressed .xml.gz are supported and all sources are combined. XMLTV channel IDs are matched against M3U tvg-id or channel name.</p>
         </label>
 
         <div className="grid gap-4 rounded-3xl border border-white/10 bg-black/10 p-4 light:border-slate-200 light:bg-slate-50">
@@ -126,6 +156,38 @@ export function SettingsView({ settings: savedSettings, onSettings, onStatus }: 
           </label>
         </div>
 
+
+        <div className="grid gap-3 rounded-3xl border border-white/10 bg-black/10 p-4 light:border-slate-200 light:bg-slate-50">
+          <div>
+            <div className="font-black">Backup &amp; restore</div>
+            <p className="mt-1 text-xs text-slate-500">
+              Saves subscriptions, favorites, recently watched channels and settings to a JSON file in your Downloads folder.
+              Importing merges the file into the current data without deleting anything. The file contains subscription
+              credentials, so keep it private.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={exportBackup} className="btn-secondary"><Download size={15} /> Export backup</button>
+            <button onClick={() => importInputRef.current?.click()} className="btn-secondary"><Upload size={15} /> Import backup</button>
+            {lastBackupPath && (
+              <button onClick={() => api.openUrl(lastBackupPath.replace(/[\\/][^\\/]+$/, '')).catch(() => undefined)} className="btn-secondary">
+                <FolderOpen size={15} /> Open folder
+              </button>
+            )}
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) importBackup(file).catch(() => undefined);
+              }}
+            />
+          </div>
+          {lastBackupPath && <p className="break-all text-xs text-slate-500">Last backup: {lastBackupPath}</p>}
+        </div>
 
         <button onClick={save} className="flex items-center gap-2 rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-black text-slate-950 hover:bg-cyan-300">
           <Save size={16} /> Save settings
