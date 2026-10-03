@@ -5,8 +5,7 @@ import { Play, RotateCw, TriangleAlert } from 'lucide-react';
 // Live-TV oriented hls.js settings, shared by the initial load and the auto-restart path.
 const HLS_CONFIG: Partial<Hls['config']> = {
   lowLatencyMode: false,
-  // A short back buffer is enough for live TV and keeps memory usage low during long sessions.
-  backBufferLength: 30,
+  backBufferLength: 90,
   maxBufferLength: 30,
   maxMaxBufferLength: 60,
   maxBufferHole: 0.5,
