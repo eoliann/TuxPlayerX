@@ -1,12 +1,33 @@
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::{Duration, Instant};
 use chrono::{DateTime, Duration as ChronoDuration, Local, LocalResult, NaiveDateTime, TimeZone, Utc};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONNECTION, COOKIE, USER_AGENT};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
-use crate::models::{Channel, EpgProgram, Subscription, SubscriptionInfo};
+use crate::models::{Channel, EpgChannelKey, EpgNow, EpgProgram, Subscription, SubscriptionInfo};
 
 const MAC_USER_AGENT: &str = "Mozilla/5.0 (QtEmbedded; U; Linux; en-US) AppleWebKit/533.3 (KHTML, like Gecko) MAG254 stbapp ver: 4 rev: 2721 Mobile Safari/533.3";
+/// How long a MAC portal token is reused before a new handshake is made.
+const MAC_SESSION_TTL: Duration = Duration::from_secs(10 * 60);
+/// How long a downloaded XMLTV guide is kept in memory before it is downloaded again.
+const EPG_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 
+/// Shared HTTP client so connections, DNS lookups and TLS sessions are reused between requests.
+fn http() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent("TuxPlayerX/2.0")
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(180))
+            .build()
+            .expect("failed to build HTTP client")
+    })
+}
+
+#[derive(Clone)]
 struct MacPortalSession {
     client: reqwest::Client,
     api_url: String,
@@ -41,9 +62,8 @@ pub async fn refresh_info(sub: &Subscription) -> anyhow::Result<SubscriptionInfo
 
 async fn read_source(source: &str) -> anyhow::Result<String> {
     if source.starts_with("http://") || source.starts_with("https://") {
-        let text = reqwest::Client::new()
+        let text = http()
             .get(source)
-            .header(USER_AGENT, "TuxPlayerX/2.0")
             .send()
             .await?
             .error_for_status()?
@@ -61,8 +81,21 @@ async fn load_m3u_channels(sub: &Subscription) -> anyhow::Result<Vec<Channel>> {
     Ok(parse_m3u(&body))
 }
 
+/// Builds an id that survives playlist reordering, so favorites and recents keep pointing at the same channel.
+fn stable_m3u_id(name: &str, group: Option<&str>, seen: &mut HashMap<String, usize>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(name.trim().to_lowercase().as_bytes());
+    hasher.update(b"|");
+    hasher.update(group.unwrap_or_default().trim().to_lowercase().as_bytes());
+    let base = format!("m3u-{}", &format!("{:x}", hasher.finalize())[..12]);
+    let count = seen.entry(base.clone()).or_insert(0);
+    *count += 1;
+    if *count == 1 { base } else { format!("{base}-{count}") }
+}
+
 fn parse_m3u(body: &str) -> Vec<Channel> {
     let mut channels = Vec::new();
+    let mut seen_ids: HashMap<String, usize> = HashMap::new();
     let mut current_name: Option<String> = None;
     let mut current_logo: Option<String> = None;
     let mut current_group: Option<String> = None;
@@ -76,12 +109,14 @@ fn parse_m3u(body: &str) -> Vec<Channel> {
             current_epg_id = extract_attr(line, "tvg-id").or_else(|| extract_attr(line, "tvg-name"));
         } else if !line.starts_with('#') {
             let idx = channels.len() + 1;
+            let name = current_name.take().unwrap_or_else(|| format!("Channel {idx}"));
+            let group = current_group.take();
             channels.push(Channel {
-                id: format!("m3u-{idx}"),
-                name: current_name.take().unwrap_or_else(|| format!("Channel {idx}")),
+                id: stable_m3u_id(&name, group.as_deref(), &mut seen_ids),
+                name,
                 stream_url: line.to_string(),
                 logo: current_logo.take(),
-                group: current_group.take(),
+                group,
                 raw_cmd: None,
                 epg_id: current_epg_id.take(),
             });
@@ -108,7 +143,7 @@ async fn refresh_m3u_info(sub: &Subscription) -> anyhow::Result<SubscriptionInfo
     let base = format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default());
     let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
     let api_url = format!("{base}{port}/player_api.php?username={}&password={}", urlencoding::encode(&username), urlencoding::encode(&password));
-    let json: Value = reqwest::get(api_url).await?.error_for_status()?.json().await?;
+    let json: Value = http().get(api_url).send().await?.error_for_status()?.json().await?;
     let user_info = json.get("user_info").unwrap_or(&json);
     let exp = user_info.get("exp_date").and_then(value_to_string).and_then(format_exp_date);
     let active = user_info.get("active_cons").or_else(|| user_info.get("active_connections")).and_then(value_to_i64);
@@ -222,6 +257,36 @@ async fn mac_handshake(sub: &Subscription) -> anyhow::Result<MacPortalSession> {
     anyhow::bail!("Could not authenticate with the MAC portal. Last error: {last_error}")
 }
 
+fn mac_sessions() -> &'static StdMutex<HashMap<String, (MacPortalSession, Instant)>> {
+    static SESSIONS: OnceLock<StdMutex<HashMap<String, (MacPortalSession, Instant)>>> = OnceLock::new();
+    SESSIONS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn mac_session_key(sub: &Subscription) -> String {
+    format!("{}|{}", sub.portal_url.as_deref().unwrap_or_default().trim(), sub.mac_address.as_deref().unwrap_or_default().trim().to_uppercase())
+}
+
+/// Returns an authenticated portal session, reusing a recent token unless `fresh` is set.
+/// Avoids a handshake + get_profile round trip on every channel switch.
+async fn mac_session(sub: &Subscription, fresh: bool) -> anyhow::Result<MacPortalSession> {
+    let key = mac_session_key(sub);
+    if !fresh {
+        if let Ok(cache) = mac_sessions().lock() {
+            if let Some((session, created)) = cache.get(&key) {
+                if created.elapsed() < MAC_SESSION_TTL {
+                    return Ok(session.clone());
+                }
+            }
+        }
+    }
+    let session = mac_handshake(sub).await?;
+    let _ = mac_get_profile(&session).await;
+    if let Ok(mut cache) = mac_sessions().lock() {
+        cache.insert(key, (session.clone(), Instant::now()));
+    }
+    Ok(session)
+}
+
 fn device_id(mac: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(mac.as_bytes());
@@ -305,8 +370,7 @@ fn clean_stream_url(value: &str) -> String {
 }
 
 async fn load_mac_channels(sub: &Subscription) -> anyhow::Result<Vec<Channel>> {
-    let session = mac_handshake(sub).await?;
-    let _ = mac_get_profile(&session).await;
+    let session = mac_session(sub, true).await?;
     let genres = mac_get_genres(&session).await;
     let params = vec![
         ("type".to_string(), "itv".to_string()),
@@ -341,10 +405,24 @@ async fn load_mac_channels(sub: &Subscription) -> anyhow::Result<Vec<Channel>> {
     Ok(out)
 }
 
+fn is_playable_url(url: &str) -> bool {
+    ["http://", "https://", "rtmp://", "rtsp://"].iter().any(|prefix| url.starts_with(prefix))
+}
+
 async fn create_mac_link(sub: &Subscription, cmd: &str) -> anyhow::Result<String> {
-    let clean_cmd = clean_stream_url(cmd);
-    let session = mac_handshake(sub).await?;
-    let _ = mac_get_profile(&session).await;
+    // Try the cached token first; if the portal rejects it, retry once with a fresh handshake.
+    let cached = mac_session(sub, false).await?;
+    let result = match request_mac_link(&cached, cmd).await {
+        Ok(url) => Ok(url),
+        Err(_) => request_mac_link(&mac_session(sub, true).await?, cmd).await,
+    };
+    result.or_else(|e| {
+        let clean_cmd = clean_stream_url(cmd);
+        if is_playable_url(&clean_cmd) { Ok(clean_cmd) } else { Err(e) }
+    })
+}
+
+async fn request_mac_link(session: &MacPortalSession, cmd: &str) -> anyhow::Result<String> {
     let params = vec![
         ("type".to_string(), "itv".to_string()),
         ("action".to_string(), "create_link".to_string()),
@@ -353,29 +431,19 @@ async fn create_mac_link(sub: &Subscription, cmd: &str) -> anyhow::Result<String
         ("forced_storage".to_string(), "0".to_string()),
         ("disable_ad".to_string(), "0".to_string()),
     ];
-    match mac_request(&session, params).await {
-        Ok(payload) => {
-            let js = js_payload(&payload);
-            let link = js.get("cmd").or_else(|| js.get("url")).or_else(|| js.get("link")).and_then(value_to_string)
-                .ok_or_else(|| anyhow::anyhow!("MAC portal did not return a playable link"))?;
-            let stream_url = clean_stream_url(&link);
-            if stream_url.starts_with("http://") || stream_url.starts_with("https://") || stream_url.starts_with("rtmp://") || stream_url.starts_with("rtsp://") {
-                return Ok(stream_url);
-            }
-            anyhow::bail!("Portal did not return a playable stream URL for this channel.")
-        }
-        Err(e) => {
-            if clean_cmd.starts_with("http://") || clean_cmd.starts_with("https://") || clean_cmd.starts_with("rtmp://") || clean_cmd.starts_with("rtsp://") {
-                Ok(clean_cmd)
-            } else {
-                Err(e)
-            }
-        }
+    let payload = mac_request(session, params).await?;
+    let js = js_payload(&payload);
+    let link = js.get("cmd").or_else(|| js.get("url")).or_else(|| js.get("link")).and_then(value_to_string)
+        .ok_or_else(|| anyhow::anyhow!("MAC portal did not return a playable link"))?;
+    let stream_url = clean_stream_url(&link);
+    if is_playable_url(&stream_url) {
+        return Ok(stream_url);
     }
+    anyhow::bail!("Portal did not return a playable stream URL for this channel.")
 }
 
 async fn refresh_mac_info(sub: &Subscription) -> anyhow::Result<SubscriptionInfo> {
-    let session = mac_handshake(sub).await?;
+    let session = mac_session(sub, true).await?;
     let profile = mac_get_profile(&session).await.ok();
     let mut payloads: Vec<Value> = Vec::new();
     if let Some(profile) = profile { payloads.push(profile); }
@@ -402,19 +470,250 @@ async fn refresh_mac_info(sub: &Subscription) -> anyhow::Result<SubscriptionInfo
 }
 
 
-pub async fn load_epg_programs(
-    epg_url: &str,
-    channel: &Channel,
-    timezone_mode: &str,
-    manual_offset_minutes: i64,
-) -> anyhow::Result<Vec<EpgProgram>> {
+/// One `<programme>` entry from the XMLTV file, kept in memory between channel switches.
+struct EpgEntry {
+    channel_id: String,
+    title: String,
+    subtitle: Option<String>,
+    description: Option<String>,
+    start_raw: String,
+    stop_raw: Option<String>,
+    start_auto: DateTime<Utc>,
+    stop_auto: Option<DateTime<Utc>>,
+}
+
+/// XMLTV guide parsed once and indexed by normalized channel key.
+struct EpgIndex {
+    /// Normalized `<programme channel="...">` value -> programmes sorted by start time.
+    programmes: HashMap<String, Vec<EpgEntry>>,
+    /// Normalized channel id or display-name -> normalized XMLTV channel ids.
+    aliases: HashMap<String, Vec<String>>,
+}
+
+struct EpgCacheEntry {
+    source: String,
+    loaded_at: Instant,
+    index: Arc<EpgIndex>,
+}
+
+fn epg_cache() -> &'static tokio::sync::Mutex<Option<EpgCacheEntry>> {
+    static CACHE: OnceLock<tokio::sync::Mutex<Option<EpgCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+/// Returns the parsed guide, downloading it only when it is missing, stale or `force` is set.
+/// The async mutex also makes concurrent callers wait for a single download instead of starting several.
+async fn epg_index(epg_url: &str, force: bool) -> anyhow::Result<Arc<EpgIndex>> {
     let source = epg_url.trim();
     if source.is_empty() {
         anyhow::bail!("Set an XMLTV EPG URL in Settings first.");
     }
 
-    let xml = read_source(source).await?;
-    parse_xmltv_programs(&xml, channel, timezone_mode, manual_offset_minutes)
+    let mut cache = epg_cache().lock().await;
+    if let Some(entry) = cache.as_ref() {
+        if !force && entry.source == source && entry.loaded_at.elapsed() < EPG_CACHE_TTL {
+            return Ok(entry.index.clone());
+        }
+    }
+
+    let loaded = async {
+        let xml = read_source(source).await?;
+        let index = tokio::task::spawn_blocking(move || build_epg_index(&xml)).await??;
+        anyhow::Ok(Arc::new(index))
+    }
+    .await;
+
+    match loaded {
+        Ok(index) => {
+            *cache = Some(EpgCacheEntry { source: source.to_string(), loaded_at: Instant::now(), index: index.clone() });
+            Ok(index)
+        }
+        // Keep showing the previous guide when a refresh fails (e.g. temporary network issue).
+        Err(e) => match cache.as_ref() {
+            Some(entry) if entry.source == source => Ok(entry.index.clone()),
+            _ => Err(e),
+        },
+    }
+}
+
+fn build_epg_index(xml: &str) -> anyhow::Result<EpgIndex> {
+    let doc = roxmltree::Document::parse(xml)?;
+    let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
+    let mut add_alias = |alias: &str, channel_key: &str| {
+        let alias = normalize_epg_key(alias);
+        if alias.is_empty() || channel_key.is_empty() { return; }
+        let list = aliases.entry(alias).or_default();
+        if !list.iter().any(|existing| existing == channel_key) {
+            list.push(channel_key.to_string());
+        }
+    };
+
+    for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "channel") {
+        let Some(id) = node.attribute("id") else { continue };
+        let channel_key = normalize_epg_key(id);
+        add_alias(id, &channel_key);
+        for display in node.children().filter(|child| child.is_element() && child.tag_name().name() == "display-name") {
+            if let Some(text) = node_text(display) {
+                add_alias(&text, &channel_key);
+            }
+        }
+    }
+
+    // Only keep a window around "now"; the margin covers any manual offset (max ±12h).
+    let now = Utc::now();
+    let min_time = now - ChronoDuration::hours(24);
+    let max_time = now + ChronoDuration::days(4);
+    let mut programmes: HashMap<String, Vec<EpgEntry>> = HashMap::new();
+
+    for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "programme") {
+        let channel_id = node.attribute("channel").unwrap_or_default();
+        let channel_key = normalize_epg_key(channel_id);
+        if channel_key.is_empty() { continue; }
+        let Some(start_raw) = node.attribute("start") else { continue };
+        let Some(start_auto) = parse_xmltv_datetime_auto(start_raw) else { continue };
+        let stop_raw = node.attribute("stop").map(str::to_string);
+        let stop_auto = stop_raw.as_deref().and_then(parse_xmltv_datetime_auto);
+        if start_auto > max_time || stop_auto.unwrap_or(start_auto) < min_time { continue; }
+
+        programmes.entry(channel_key).or_default().push(EpgEntry {
+            channel_id: channel_id.to_string(),
+            title: first_child_text(node, "title").unwrap_or_else(|| "Untitled programme".to_string()),
+            subtitle: first_child_text(node, "sub-title"),
+            description: first_child_text(node, "desc"),
+            start_raw: start_raw.to_string(),
+            stop_raw,
+            start_auto,
+            stop_auto,
+        });
+    }
+
+    for list in programmes.values_mut() {
+        list.sort_by_key(|entry| entry.start_auto);
+    }
+
+    Ok(EpgIndex { programmes, aliases })
+}
+
+/// Same matching rules as before: tvg-id / portal EPG id, channel id and channel name are compared
+/// (normalized) against XMLTV channel ids, display names and programme channel attributes.
+fn epg_entries_for<'a>(index: &'a EpgIndex, id: &str, name: &str, epg_id: Option<&str>) -> Vec<&'a EpgEntry> {
+    let mut candidate_keys: Vec<String> = Vec::new();
+    if let Some(epg_id) = epg_id {
+        candidate_keys.push(normalize_epg_key(epg_id));
+    }
+    candidate_keys.push(normalize_epg_key(id));
+    candidate_keys.push(normalize_epg_key(name));
+
+    let mut programme_keys: HashSet<&str> = HashSet::new();
+    for key in candidate_keys.iter().filter(|key| !key.is_empty()) {
+        if let Some((stored_key, _)) = index.programmes.get_key_value(key.as_str()) {
+            programme_keys.insert(stored_key.as_str());
+        }
+        if let Some(channel_keys) = index.aliases.get(key.as_str()) {
+            for channel_key in channel_keys {
+                programme_keys.insert(channel_key.as_str());
+            }
+        }
+    }
+
+    let mut entries: Vec<&EpgEntry> = programme_keys
+        .into_iter()
+        .filter_map(|key| index.programmes.get(key))
+        .flatten()
+        .collect();
+    entries.sort_by_key(|entry| entry.start_auto);
+    entries
+}
+
+/// Programme start/stop according to the user's EPG time mode.
+fn entry_times(entry: &EpgEntry, timezone_mode: &str, manual_offset_minutes: i64) -> Option<(DateTime<Utc>, Option<DateTime<Utc>>)> {
+    let mode = timezone_mode.trim().to_ascii_lowercase();
+    let (start, stop) = if mode == "local" {
+        (
+            parse_compact_xmltv_naive(&entry.start_raw).map(local_naive_to_utc)?,
+            entry.stop_raw.as_deref().and_then(parse_compact_xmltv_naive).map(local_naive_to_utc),
+        )
+    } else {
+        (entry.start_auto, entry.stop_auto)
+    };
+    if mode == "manual" && manual_offset_minutes != 0 {
+        let offset = ChronoDuration::minutes(manual_offset_minutes);
+        return Some((start + offset, stop.map(|stop| stop + offset)));
+    }
+    Some((start, stop))
+}
+
+pub async fn load_epg_programs(
+    epg_url: &str,
+    channel: &Channel,
+    timezone_mode: &str,
+    manual_offset_minutes: i64,
+    force: bool,
+) -> anyhow::Result<Vec<EpgProgram>> {
+    let index = epg_index(epg_url, force).await?;
+    let now = Utc::now();
+    let min_time = now - ChronoDuration::hours(6);
+    let max_time = now + ChronoDuration::hours(72);
+    let mut programs = Vec::new();
+
+    for entry in epg_entries_for(&index, &channel.id, &channel.name, channel.epg_id.as_deref()) {
+        let Some((start_dt, stop_dt)) = entry_times(entry, timezone_mode, manual_offset_minutes) else { continue };
+        if start_dt > max_time { continue; }
+        if let Some(stop) = stop_dt {
+            if stop < min_time { continue; }
+        } else if start_dt < min_time {
+            continue;
+        }
+
+        let is_now = start_dt <= now && stop_dt.as_ref().map(|stop| *stop >= now).unwrap_or(false);
+        programs.push(EpgProgram {
+            channel_id: entry.channel_id.clone(),
+            title: entry.title.clone(),
+            subtitle: entry.subtitle.clone(),
+            description: entry.description.clone(),
+            start: start_dt.to_rfc3339(),
+            stop: stop_dt.as_ref().map(|stop| stop.to_rfc3339()),
+            start_label: epg_label(&start_dt),
+            stop_label: stop_dt.as_ref().map(epg_label),
+            is_now,
+        });
+        if programs.len() >= 60 { break; }
+    }
+
+    Ok(programs)
+}
+
+/// Current programme for many channels at once, used to show "now playing" in the channel list.
+pub async fn load_epg_now(
+    epg_url: &str,
+    channels: &[EpgChannelKey],
+    timezone_mode: &str,
+    manual_offset_minutes: i64,
+) -> anyhow::Result<HashMap<String, EpgNow>> {
+    let index = epg_index(epg_url, false).await?;
+    let now = Utc::now();
+    let mut out = HashMap::new();
+
+    for channel in channels {
+        let entries = epg_entries_for(&index, &channel.id, &channel.name, channel.epg_id.as_deref());
+        let current = entries.into_iter().find_map(|entry| {
+            let (start, stop) = entry_times(entry, timezone_mode, manual_offset_minutes)?;
+            let stop = stop?;
+            (start <= now && now < stop).then_some((entry, start, stop))
+        });
+        if let Some((entry, start, stop)) = current {
+            let total = (stop - start).num_seconds().max(1) as f64;
+            let elapsed = (now - start).num_seconds() as f64;
+            out.insert(channel.id.clone(), EpgNow {
+                title: entry.title.clone(),
+                start_label: epg_label(&start),
+                stop_label: Some(epg_label(&stop)),
+                progress: Some((elapsed / total).clamp(0.0, 1.0)),
+            });
+        }
+    }
+
+    Ok(out)
 }
 
 fn normalize_epg_key(value: &str) -> String {
@@ -470,112 +769,8 @@ fn parse_xmltv_datetime_auto(raw: &str) -> Option<DateTime<Utc>> {
     parse_compact_xmltv_naive(trimmed).map(local_naive_to_utc)
 }
 
-fn parse_xmltv_datetime_for_mode(raw: &str, timezone_mode: &str, manual_offset_minutes: i64) -> Option<DateTime<Utc>> {
-    let normalized_mode = timezone_mode.trim().to_ascii_lowercase();
-    let mut dt = if normalized_mode == "local" {
-        parse_compact_xmltv_naive(raw).map(local_naive_to_utc)?
-    } else {
-        parse_xmltv_datetime_auto(raw)?
-    };
-
-    if normalized_mode == "manual" && manual_offset_minutes != 0 {
-        dt = dt + ChronoDuration::minutes(manual_offset_minutes);
-    }
-
-    Some(dt)
-}
-
 fn epg_label(dt: &DateTime<Utc>) -> String {
     dt.with_timezone(&Local).format("%H:%M").to_string()
-}
-
-fn parse_xmltv_programs(xml: &str, channel: &Channel, timezone_mode: &str, manual_offset_minutes: i64) -> anyhow::Result<Vec<EpgProgram>> {
-    let doc = roxmltree::Document::parse(xml)?;
-    let mut candidate_keys = std::collections::HashSet::new();
-
-    if let Some(epg_id) = channel.epg_id.as_deref() {
-        if !epg_id.trim().is_empty() {
-            candidate_keys.insert(normalize_epg_key(epg_id));
-        }
-    }
-    candidate_keys.insert(normalize_epg_key(&channel.id));
-    candidate_keys.insert(normalize_epg_key(&channel.name));
-
-    let mut matched_channel_ids = std::collections::HashSet::new();
-    for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "channel") {
-        if let Some(id) = node.attribute("id") {
-            if candidate_keys.contains(&normalize_epg_key(id)) {
-                matched_channel_ids.insert(id.to_string());
-                continue;
-            }
-        }
-
-        let mut display_match = false;
-        for display in node.children().filter(|child| child.is_element() && child.tag_name().name() == "display-name") {
-            if let Some(text) = node_text(display) {
-                if candidate_keys.contains(&normalize_epg_key(&text)) {
-                    display_match = true;
-                    break;
-                }
-            }
-        }
-        if display_match {
-            if let Some(id) = node.attribute("id") {
-                matched_channel_ids.insert(id.to_string());
-            }
-        }
-    }
-
-    if matched_channel_ids.is_empty() {
-        if let Some(epg_id) = channel.epg_id.as_deref() {
-            if !epg_id.trim().is_empty() {
-                matched_channel_ids.insert(epg_id.to_string());
-            }
-        }
-    }
-
-    let now = Utc::now();
-    let min_time = now - ChronoDuration::hours(6);
-    let max_time = now + ChronoDuration::hours(72);
-    let mut programs = Vec::new();
-
-    for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "programme") {
-        let programme_channel = node.attribute("channel").unwrap_or_default();
-        let channel_matches = matched_channel_ids.contains(programme_channel)
-            || candidate_keys.contains(&normalize_epg_key(programme_channel));
-        if !channel_matches { continue; }
-
-        let Some(start_dt) = node.attribute("start").and_then(|raw| parse_xmltv_datetime_for_mode(raw, timezone_mode, manual_offset_minutes)) else { continue; };
-        let stop_dt = node.attribute("stop").and_then(|raw| parse_xmltv_datetime_for_mode(raw, timezone_mode, manual_offset_minutes));
-        if start_dt > max_time { continue; }
-        if let Some(stop) = stop_dt {
-            if stop < min_time { continue; }
-        } else if start_dt < min_time {
-            continue;
-        }
-
-        let title = first_child_text(node, "title").unwrap_or_else(|| "Untitled programme".to_string());
-        let subtitle = first_child_text(node, "sub-title");
-        let description = first_child_text(node, "desc");
-        let is_now = start_dt <= now && stop_dt.as_ref().map(|stop| *stop >= now).unwrap_or(false);
-        let stop_label = stop_dt.as_ref().map(epg_label);
-        let stop = stop_dt.as_ref().map(|stop| stop.to_rfc3339());
-        programs.push(EpgProgram {
-            channel_id: programme_channel.to_string(),
-            title,
-            subtitle,
-            description,
-            start: start_dt.to_rfc3339(),
-            stop,
-            start_label: epg_label(&start_dt),
-            stop_label,
-            is_now,
-        });
-    }
-
-    programs.sort_by(|a, b| a.start.cmp(&b.start));
-    programs.truncate(60);
-    Ok(programs)
 }
 
 fn first_value(payloads: &[Value], keys: &[&str]) -> Option<String> {
@@ -649,4 +844,82 @@ fn format_exp_date(raw: String) -> Option<String> {
         return Some(dt.date().to_string());
     }
     Some(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn xmltv_time(dt: DateTime<Utc>) -> String {
+        dt.format("%Y%m%d%H%M%S +0000").to_string()
+    }
+
+    #[test]
+    fn m3u_ids_are_stable_across_reordering() {
+        let a = parse_m3u("#EXTM3U\n#EXTINF:-1 group-title=\"News\",Alpha\nhttp://a\n#EXTINF:-1 group-title=\"News\",Beta\nhttp://b\n");
+        let b = parse_m3u("#EXTM3U\n#EXTINF:-1 group-title=\"News\",Beta\nhttp://b2\n#EXTINF:-1 group-title=\"News\",Alpha\nhttp://a2\n");
+        assert_eq!(a[0].id, b[1].id);
+        assert_eq!(a[1].id, b[0].id);
+        let dup = parse_m3u("#EXTINF:-1,Same\nhttp://1\n#EXTINF:-1,Same\nhttp://2\n");
+        assert_ne!(dup[0].id, dup[1].id);
+    }
+
+    #[test]
+    fn epg_index_matches_by_id_and_display_name() {
+        let now = Utc::now();
+        let xml = format!(
+            r#"<tv>
+                <channel id="pro.tv.ro"><display-name>PRO TV</display-name></channel>
+                <programme channel="pro.tv.ro" start="{}" stop="{}"><title>Stirile</title></programme>
+                <programme channel="pro.tv.ro" start="{}" stop="{}"><title>Next</title></programme>
+            </tv>"#,
+            xmltv_time(now - ChronoDuration::minutes(30)),
+            xmltv_time(now + ChronoDuration::minutes(30)),
+            xmltv_time(now + ChronoDuration::minutes(30)),
+            xmltv_time(now + ChronoDuration::minutes(90)),
+        );
+        let index = build_epg_index(&xml).unwrap();
+
+        let by_name = epg_entries_for(&index, "mac-1", "Pro TV", None);
+        assert_eq!(by_name.len(), 2);
+        assert_eq!(by_name[0].title, "Stirile");
+
+        let by_id = epg_entries_for(&index, "x", "Unrelated", Some("pro.tv.ro"));
+        assert_eq!(by_id.len(), 2);
+
+        assert!(epg_entries_for(&index, "x", "Other channel", None).is_empty());
+
+        let (start, stop) = entry_times(by_name[0], "manual", 60).unwrap();
+        assert_eq!(start - by_name[0].start_auto, ChronoDuration::minutes(60));
+        assert_eq!(stop.unwrap() - by_name[0].stop_auto.unwrap(), ChronoDuration::minutes(60));
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// Manual timing check: `EPG_FILE=/path/epg.xml cargo test --release epg_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn epg_timing() {
+        let path = std::env::var("EPG_FILE").expect("set EPG_FILE");
+        let xml = std::fs::read_to_string(path).unwrap();
+        let started = Instant::now();
+        let index = build_epg_index(&xml).unwrap();
+        println!("parse + index: {:?}", started.elapsed());
+
+        let doc = roxmltree::Document::parse(&xml).unwrap();
+        let names: Vec<String> = doc.descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "channel")
+            .filter_map(|n| n.children().find(|c| c.tag_name().name() == "display-name").and_then(node_text))
+            .collect();
+
+        let started = Instant::now();
+        let mut found = 0;
+        for name in &names {
+            if !epg_entries_for(&index, "x", name, None).is_empty() { found += 1; }
+        }
+        println!("lookup for {} channels ({} with data): {:?}", names.len(), found, started.elapsed());
+    }
 }

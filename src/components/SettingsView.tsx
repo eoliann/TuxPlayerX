@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { Moon, Save, Sun } from 'lucide-react';
 import { AppSettings } from '../lib/types';
 import { api } from '../lib/api';
@@ -8,12 +9,30 @@ interface Props {
   onStatus: (status: string) => void;
 }
 
-export function SettingsView({ settings, onSettings, onStatus }: Props) {
-  const update = (patch: Partial<AppSettings>) => onSettings({ ...settings, ...patch });
+export function SettingsView({ settings: savedSettings, onSettings, onStatus }: Props) {
+  // Edits stay local until saved, so the player does not react (e.g. reload the EPG) on every keystroke.
+  const [settings, setSettings] = useState<AppSettings>(savedSettings);
+  const dirtyRef = useRef(false);
+  useEffect(() => {
+    if (!dirtyRef.current) setSettings(savedSettings);
+  }, [savedSettings]);
+
+  const update = (patch: Partial<AppSettings>) => {
+    dirtyRef.current = true;
+    setSettings((prev) => ({ ...prev, ...patch }));
+    // Theme previews immediately; everything else applies on save.
+    if (patch.theme) onSettings({ ...savedSettings, theme: patch.theme });
+  };
 
   const save = async () => {
-    await api.saveSettings(settings);
-    onStatus('Settings saved.');
+    try {
+      await api.saveSettings(settings);
+      dirtyRef.current = false;
+      onSettings(settings);
+      onStatus('Settings saved.');
+    } catch (err) {
+      onStatus(String(err));
+    }
   };
 
   return (
@@ -38,6 +57,10 @@ export function SettingsView({ settings, onSettings, onStatus }: Props) {
         <label className="setting-row">
           <span>Auto-load default subscription</span>
           <input type="checkbox" checked={settings.autoLoadDefault} onChange={(e) => update({ autoLoadDefault: e.target.checked })} />
+        </label>
+        <label className="setting-row">
+          <span>Resume last watched channel on startup</span>
+          <input type="checkbox" checked={settings.resumeLastChannel} onChange={(e) => update({ resumeLastChannel: e.target.checked })} />
         </label>
         <label className="setting-row">
           <span>Auto-restart stalled stream</span>

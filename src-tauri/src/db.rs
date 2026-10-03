@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
-use crate::models::{AppSettings, Subscription, SubscriptionInfo};
+use crate::models::{AppSettings, Channel, Subscription, SubscriptionInfo};
 
 pub struct Database {
-    path: PathBuf,
+    // A single long-lived connection; access is already serialized by the Mutex in AppState.
+    conn: Connection,
 }
 
 impl Database {
@@ -12,19 +13,15 @@ impl Database {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let db = Self { path };
+        let conn = Connection::open(&path)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+        let db = Self { conn };
         db.init()?;
         Ok(db)
     }
 
-    fn connect(&self) -> anyhow::Result<Connection> {
-        let conn = Connection::open(&self.path)?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        Ok(conn)
-    }
-
     fn init(&self) -> anyhow::Result<()> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS subscriptions (
@@ -48,6 +45,26 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS channel_cache (
+                subscription_id INTEGER PRIMARY KEY REFERENCES subscriptions(id) ON DELETE CASCADE,
+                payload TEXT NOT NULL,
+                fetched_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS favorites (
+                subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+                channel_id TEXT NOT NULL,
+                added_at INTEGER NOT NULL,
+                PRIMARY KEY (subscription_id, channel_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS recents (
+                subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+                channel_id TEXT NOT NULL,
+                watched_at INTEGER NOT NULL,
+                PRIMARY KEY (subscription_id, channel_id)
+            );
             "#,
         )?;
 
@@ -60,6 +77,7 @@ impl Database {
             ("epg_url", "https://iptv-epg.org/files/epg-ro.xml"),
             ("epg_timezone_mode", "auto"),
             ("epg_time_offset_minutes", "0"),
+            ("resume_last_channel", "true"),
         ];
         for (key, value) in defaults {
             conn.execute(
@@ -79,7 +97,7 @@ impl Database {
     }
 
     pub fn list_subscriptions(&self) -> anyhow::Result<Vec<Subscription>> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         let mut stmt = conn.prepare("SELECT * FROM subscriptions ORDER BY is_default DESC, name COLLATE NOCASE ASC")?;
         let rows = stmt.query_map([], row_to_subscription)?;
         let mut out = Vec::new();
@@ -90,21 +108,21 @@ impl Database {
     }
 
     pub fn get_subscription(&self, id: i64) -> anyhow::Result<Option<Subscription>> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         conn.query_row("SELECT * FROM subscriptions WHERE id = ?1", params![id], row_to_subscription)
             .optional()
             .map_err(Into::into)
     }
 
     pub fn get_default_subscription(&self) -> anyhow::Result<Option<Subscription>> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         conn.query_row("SELECT * FROM subscriptions WHERE is_default = 1 ORDER BY id DESC LIMIT 1", [], row_to_subscription)
             .optional()
             .map_err(Into::into)
     }
 
     pub fn save_subscription(&self, sub: &Subscription) -> anyhow::Result<i64> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         if sub.is_default {
             conn.execute("UPDATE subscriptions SET is_default = 0", [])?;
@@ -153,20 +171,95 @@ impl Database {
     }
 
     pub fn delete_subscription(&self, id: i64) -> anyhow::Result<()> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         conn.execute("DELETE FROM subscriptions WHERE id = ?1", params![id])?;
         Ok(())
     }
 
+    /// Returns the cached channel list when it is younger than `max_age_secs`.
+    pub fn get_cached_channels(&self, subscription_id: i64, max_age_secs: i64) -> anyhow::Result<Option<(Vec<Channel>, i64)>> {
+        let row: Option<(String, i64)> = self.conn
+            .query_row(
+                "SELECT payload, fetched_at FROM channel_cache WHERE subscription_id = ?1",
+                params![subscription_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((payload, fetched_at)) = row else { return Ok(None) };
+        if Utc::now().timestamp() - fetched_at > max_age_secs {
+            return Ok(None);
+        }
+        Ok(serde_json::from_str(&payload).ok().map(|channels| (channels, fetched_at)))
+    }
+
+    pub fn store_cached_channels(&self, subscription_id: i64, channels: &[Channel]) -> anyhow::Result<i64> {
+        let now = Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO channel_cache(subscription_id, payload, fetched_at) VALUES(?1, ?2, ?3)
+             ON CONFLICT(subscription_id) DO UPDATE SET payload=excluded.payload, fetched_at=excluded.fetched_at",
+            params![subscription_id, serde_json::to_string(channels)?, now],
+        )?;
+        Ok(now)
+    }
+
+    pub fn clear_cached_channels(&self, subscription_id: i64) -> anyhow::Result<()> {
+        self.conn.execute("DELETE FROM channel_cache WHERE subscription_id = ?1", params![subscription_id])?;
+        Ok(())
+    }
+
+    pub fn list_favorites(&self, subscription_id: i64) -> anyhow::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT channel_id FROM favorites WHERE subscription_id = ?1 ORDER BY added_at ASC")?;
+        let rows = stmt.query_map(params![subscription_id], |row| row.get(0))?;
+        Ok(rows.collect::<Result<Vec<String>, _>>()?)
+    }
+
+    /// Toggles a favorite and returns whether the channel is now a favorite.
+    pub fn toggle_favorite(&self, subscription_id: i64, channel_id: &str) -> anyhow::Result<bool> {
+        let removed = self.conn.execute(
+            "DELETE FROM favorites WHERE subscription_id = ?1 AND channel_id = ?2",
+            params![subscription_id, channel_id],
+        )?;
+        if removed > 0 {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "INSERT INTO favorites(subscription_id, channel_id, added_at) VALUES(?1, ?2, ?3)",
+            params![subscription_id, channel_id, Utc::now().timestamp()],
+        )?;
+        Ok(true)
+    }
+
+    pub fn list_recents(&self, subscription_id: i64) -> anyhow::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT channel_id FROM recents WHERE subscription_id = ?1 ORDER BY watched_at DESC")?;
+        let rows = stmt.query_map(params![subscription_id], |row| row.get(0))?;
+        Ok(rows.collect::<Result<Vec<String>, _>>()?)
+    }
+
+    pub fn record_recent(&self, subscription_id: i64, channel_id: &str) -> anyhow::Result<()> {
+        const MAX_RECENTS: i64 = 30;
+        self.conn.execute(
+            "INSERT INTO recents(subscription_id, channel_id, watched_at) VALUES(?1, ?2, ?3)
+             ON CONFLICT(subscription_id, channel_id) DO UPDATE SET watched_at=excluded.watched_at",
+            params![subscription_id, channel_id, Utc::now().timestamp_millis()],
+        )?;
+        self.conn.execute(
+            "DELETE FROM recents WHERE subscription_id = ?1 AND channel_id NOT IN (
+                SELECT channel_id FROM recents WHERE subscription_id = ?1 ORDER BY watched_at DESC LIMIT ?2
+             )",
+            params![subscription_id, MAX_RECENTS],
+        )?;
+        Ok(())
+    }
+
     pub fn set_default_subscription(&self, id: i64) -> anyhow::Result<()> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         conn.execute("UPDATE subscriptions SET is_default = 0", [])?;
         conn.execute("UPDATE subscriptions SET is_default = 1 WHERE id = ?1", params![id])?;
         Ok(())
     }
 
     pub fn update_subscription_info(&self, id: i64, info: &SubscriptionInfo) -> anyhow::Result<()> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         conn.execute(
             "UPDATE subscriptions SET expires_at=?1, active_connections=?2, max_connections=?3, updated_at=?4 WHERE id=?5",
             params![
@@ -181,7 +274,7 @@ impl Database {
     }
 
     pub fn get_settings(&self) -> anyhow::Result<AppSettings> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         let get = |key: &str, default: &str| -> anyhow::Result<String> {
             let value: Option<String> = conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0)).optional()?;
             Ok(value.unwrap_or_else(|| default.to_string()))
@@ -195,11 +288,12 @@ impl Database {
             epg_url: get("epg_url", "https://iptv-epg.org/files/epg-ro.xml")?,
             epg_timezone_mode: get("epg_timezone_mode", "auto")?,
             epg_time_offset_minutes: get("epg_time_offset_minutes", "0")?.parse().unwrap_or(0),
+            resume_last_channel: get("resume_last_channel", "true")? == "true",
         })
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> anyhow::Result<()> {
-        let conn = self.connect()?;
+        let conn = &self.conn;
         let values = [
             ("theme", settings.theme.clone()),
             ("network_cache_ms", settings.network_cache_ms.to_string()),
@@ -209,6 +303,7 @@ impl Database {
             ("epg_url", settings.epg_url.clone()),
             ("epg_timezone_mode", settings.epg_timezone_mode.clone()),
             ("epg_time_offset_minutes", settings.epg_time_offset_minutes.to_string()),
+            ("resume_last_channel", settings.resume_last_channel.to_string()),
         ];
         for (key, value) in values {
             conn.execute(

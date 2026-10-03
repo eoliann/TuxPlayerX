@@ -70,6 +70,15 @@ It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a
 - Authorized MAC/Stalker/Ministra-style subscription adapter
 - Default subscription support
 - Channel loading and search
+- Fast channel list that stays smooth with very large playlists (only visible rows are rendered)
+- Channel logos, category (group) filter, favorites and recently watched channels
+- "Now playing" programme with progress bar in the channel list (when EPG is configured)
+- Resume the last watched channel on startup (can be disabled in Settings)
+- Keyboard shortcuts: ↑/↓ change channel, F fullscreen, M mute, R restart, Ctrl+F search
+- Playback keeps running while browsing Subscriptions, Settings or About
+- Channel lists are cached locally for 6 hours; the refresh button downloads them again
+- XMLTV guide is downloaded once and kept in memory (refreshed every 6 hours or from the EPG button)
+- MAC portal sessions are reused between channel switches for faster zapping
 - Subscription info refresh where supported by the provider
 - HTML5/HLS video playback in the app window
 - Detachable resizable Picture-in-Picture window

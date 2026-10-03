@@ -17,6 +17,7 @@ const defaultSettings: AppSettings = {
   epgUrl: 'https://iptv-epg.org/files/epg-ro.xml',
   epgTimezoneMode: 'auto',
   epgTimeOffsetMinutes: 0,
+  resumeLastChannel: true,
 };
 
 function App() {
@@ -24,19 +25,22 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [reloadToken, setReloadToken] = useState(0);
   const [status, setStatus] = useState('Ready.');
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   useEffect(() => {
-    api.getSettings().then(setSettings).catch(() => setSettings(defaultSettings));
+    api.getSettings()
+      .then(setSettings)
+      .catch(() => setSettings(defaultSettings))
+      .finally(() => setSettingsLoaded(true));
   }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle('light', settings.theme === 'light');
   }, [settings.theme]);
 
+  // The player stays mounted (just hidden) so playback keeps running while other pages are open.
   const page = (() => {
     switch (activeTab) {
-      case 'player':
-        return <PlayerView settings={settings} reloadToken={reloadToken} onStatus={setStatus} />;
       case 'subscriptions':
         return <SubscriptionsView onChanged={() => setReloadToken((x) => x + 1)} onStatus={setStatus} />;
       case 'settings':
@@ -60,17 +64,23 @@ function App() {
             </div>
             <div className="max-w-[50%] truncate rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-slate-300 light:border-slate-200 light:bg-slate-50 light:text-slate-600">{status}</div>
           </header>
+          <div className={activeTab === 'player' ? 'p-6' : 'hidden'}>
+            {/* Wait for saved settings so auto-load / resume decisions use the user's real preferences. */}
+            {settingsLoaded && <PlayerView settings={settings} reloadToken={reloadToken} active={activeTab === 'player'} onStatus={setStatus} />}
+          </div>
           <AnimatePresence mode="wait">
-            <motion.div
-              key={activeTab}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.18 }}
-              className="p-6"
-            >
-              {page}
-            </motion.div>
+            {page && (
+              <motion.div
+                key={activeTab}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+                className="p-6"
+              >
+                {page}
+              </motion.div>
+            )}
           </AnimatePresence>
         </main>
       </div>
