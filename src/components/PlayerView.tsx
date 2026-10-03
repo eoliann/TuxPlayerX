@@ -1,21 +1,42 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, ExternalLink, Maximize2, Play, RefreshCw, Search } from 'lucide-react';
-import { Channel, EpgProgram, AppSettings, Subscription } from '../lib/types';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { CalendarDays, ExternalLink, Keyboard, Maximize2, Play, RefreshCw, Search } from 'lucide-react';
+import { Channel, EpgNow, EpgProgram, AppSettings, Subscription } from '../lib/types';
 import { api, isTauriRuntime } from '../lib/api';
 import { VideoSurface, VideoSurfaceHandle } from './VideoSurface';
+import { ChannelList, ChannelListHandle } from './ChannelList';
 import { cn } from '../lib/utils';
 
 interface PlayerViewProps {
   settings: AppSettings;
   reloadToken: number;
+  /** False while another page is shown; the player keeps running but keyboard shortcuts are disabled. */
+  active: boolean;
   onStatus: (status: string) => void;
 }
 
-export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps) {
+const FILTER_ALL = '__all__';
+const FILTER_FAVORITES = '__favorites__';
+const FILTER_RECENT = '__recent__';
+const UNCATEGORIZED = 'Uncategorized';
+/** Delay before a channel picked with the arrow keys starts playing, so quick zapping does not resolve every stream. */
+const ZAP_DELAY_MS = 400;
+const EPG_REFRESH_MS = 60_000;
+
+function formatTime(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerViewProps) {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [selectedSubId, setSelectedSubId] = useState<number | ''>('');
   const [channels, setChannels] = useState<Channel[]>([]);
   const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState(FILTER_ALL);
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [recents, setRecents] = useState<string[]>([]);
+  const [epgNow, setEpgNow] = useState<Record<string, EpgNow>>({});
+  const [epgRevision, setEpgRevision] = useState(0);
+  const [zapTargetId, setZapTargetId] = useState<string | null>(null);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [currentUrl, setCurrentUrl] = useState('');
   const [activeStreamUrl, setActiveStreamUrl] = useState('');
@@ -25,24 +46,28 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
   const [epgPrograms, setEpgPrograms] = useState<EpgProgram[]>([]);
   const [epgLoading, setEpgLoading] = useState(false);
   const videoSurfaceRef = useRef<VideoSurfaceHandle | null>(null);
+  const channelListRef = useRef<ChannelListHandle | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const epgScrollRef = useRef<HTMLDivElement | null>(null);
+  const selectedSubIdRef = useRef<number | ''>('');
+  selectedSubIdRef.current = selectedSubId;
+  const loadSeqRef = useRef(0);
+  const playSeqRef = useRef(0);
+  const resumedRef = useRef(false);
+  const zapTimerRef = useRef<number | undefined>(undefined);
+  const deferredSearch = useDeferredValue(search);
+
+  // Scroll only the guide panel (not the whole page) so the current programme is centered.
   const nowPlayingRef = useCallback((node: HTMLDivElement | null) => {
-    if (node) {
-      window.requestAnimationFrame(() => {
-        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      });
-    }
+    if (!node) return;
+    window.requestAnimationFrame(() => {
+      const container = epgScrollRef.current;
+      if (!container) return;
+      container.scrollTo({ top: node.offsetTop - container.clientHeight / 2 + node.clientHeight / 2, behavior: 'smooth' });
+    });
   }, []);
 
   const isWindowsRuntime = isTauriRuntime() && platform === 'windows';
-
-  const loadSubscriptions = async () => {
-    const list = await api.listSubscriptions();
-    setSubscriptions(list);
-    const def = list.find((item) => item.isDefault) || list[0];
-    if (def?.id) setSelectedSubId(def.id);
-  };
-
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -64,70 +89,162 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
   }, []);
 
   useEffect(() => {
-    loadSubscriptions().catch((err) => onStatus(String(err)));
+    let cancelled = false;
+    (async () => {
+      const list = await api.listSubscriptions();
+      if (cancelled) return;
+      setSubscriptions(list);
+      const current = selectedSubIdRef.current;
+      const target = (current && list.find((item) => item.id === current)) || list.find((item) => item.isDefault) || list[0];
+      if (!target?.id) {
+        setSelectedSubId('');
+        setChannels([]);
+        onStatus('No subscription configured. Add one in Subscriptions.');
+        return;
+      }
+      setSelectedSubId(target.id);
+      selectedSubIdRef.current = target.id;
+      if (settings.autoLoadDefault || current === target.id) {
+        const resume = !resumedRef.current && settings.resumeLastChannel;
+        resumedRef.current = true;
+        await handleLoadChannels(target.id, false, resume);
+      }
+    })().catch((err) => onStatus(String(err)));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
 
   useEffect(() => {
-    if (!settings.autoLoadDefault) return;
-    api.getDefaultSubscription()
-      .then((sub) => {
-        if (sub?.id) {
-          setSelectedSubId(sub.id);
-          return handleLoadChannels(sub.id);
-        }
-        onStatus('No default subscription configured.');
-      })
-      .catch((err) => onStatus(String(err)));
+    if (!currentChannel) {
+      setEpgPrograms([]);
+      return;
+    }
+    loadEpgForChannel(currentChannel).catch(() => undefined);
+    // Keep the "Live" marker up to date; the guide is cached in the backend, so this is cheap.
+    const timer = window.setInterval(() => loadEpgForChannel(currentChannel, false, true).catch(() => undefined), EPG_REFRESH_MS);
+    return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reloadToken, settings.autoLoadDefault]);
+  }, [currentChannel?.id, settings.epgUrl, settings.epgTimezoneMode, settings.epgTimeOffsetMinutes, epgRevision]);
+
+  const epgKeys = useMemo(() => channels.map((ch) => ({ id: ch.id, name: ch.name, epgId: ch.epgId })), [channels]);
 
   useEffect(() => {
-    if (currentChannel) {
-      loadEpgForChannel(currentChannel).catch(() => undefined);
-    } else {
-      setEpgPrograms([]);
+    if (!settings.epgUrl?.trim() || epgKeys.length === 0) {
+      setEpgNow({});
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentChannel?.id, settings.epgUrl, settings.epgTimezoneMode, settings.epgTimeOffsetMinutes]);
+    let cancelled = false;
+    const refresh = () => {
+      api.loadEpgNow(epgKeys)
+        .then((map) => {
+          if (!cancelled) setEpgNow(map);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, EPG_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [epgKeys, settings.epgUrl, settings.epgTimezoneMode, settings.epgTimeOffsetMinutes, epgRevision]);
 
-  const handleLoadChannels = async (id = selectedSubId) => {
+  const handleLoadChannels = async (id: number | '' = selectedSubIdRef.current, force = false, resume = false) => {
     if (!id) return;
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     try {
-      const list = await api.loadChannels(Number(id));
-      setChannels(list);
-      onStatus(`Loaded ${list.length} channels.`);
+      const [result, favoriteIds, recentIds] = await Promise.all([
+        api.loadChannels(Number(id), force),
+        api.listFavorites(Number(id)),
+        api.listRecents(Number(id)),
+      ]);
+      // Ignore results for a subscription the user has already switched away from.
+      if (seq !== loadSeqRef.current) return;
+      setChannels(result.channels);
+      setFavorites(new Set(favoriteIds));
+      setRecents(recentIds);
+      onStatus(
+        result.fromCache
+          ? `Loaded ${result.channels.length} channels from cache (updated ${formatTime(result.fetchedAt)}). Use refresh to download again.`
+          : `Loaded ${result.channels.length} channels.`,
+      );
+      if (resume && recentIds[0]) {
+        const last = result.channels.find((ch) => ch.id === recentIds[0]);
+        if (last) playChannel(last, Number(id)).catch(() => undefined);
+      }
     } catch (err) {
-      onStatus(String(err));
+      if (seq === loadSeqRef.current) onStatus(String(err));
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   };
 
-  const loadEpgForChannel = async (channel: Channel) => {
+  const loadEpgForChannel = async (channel: Channel, force = false, silent = false) => {
     if (!settings.epgUrl?.trim()) {
       setEpgPrograms([]);
       return;
     }
-    setEpgLoading(true);
+    if (!silent) setEpgLoading(true);
     try {
-      const programs = await api.loadEpgPrograms(channel);
+      const programs = await api.loadEpgPrograms(channel, force);
       setEpgPrograms(programs);
     } catch (err) {
       setEpgPrograms([]);
-      onStatus(`EPG unavailable: ${String(err)}`);
+      if (!silent) onStatus(`EPG unavailable: ${String(err)}`);
     } finally {
-      setEpgLoading(false);
+      if (!silent) setEpgLoading(false);
     }
   };
 
-  const filteredChannels = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return channels;
-    return channels.filter((ch) => `${ch.name} ${ch.group || ''}`.toLowerCase().includes(q));
-  }, [channels, search]);
+  const refreshEpg = async () => {
+    if (!currentChannel) {
+      setEpgRevision((value) => value + 1);
+      return;
+    }
+    await loadEpgForChannel(currentChannel, true);
+    setEpgRevision((value) => value + 1);
+  };
 
-  const selectedSubscription = subscriptions.find((item) => item.id === selectedSubId);
+  // Lowercased "name group" per channel, computed once per channel list instead of on every keystroke.
+  const searchIndex = useMemo(() => channels.map((ch) => `${ch.name} ${ch.group || ''}`.toLowerCase()), [channels]);
+
+  const groups = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const ch of channels) {
+      const group = ch.group || UNCATEGORIZED;
+      counts.set(group, (counts.get(group) || 0) + 1);
+    }
+    return [...counts.entries()];
+  }, [channels]);
+
+  const filteredChannels = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    let indices: number[];
+    if (filter === FILTER_RECENT) {
+      const position = new Map(channels.map((ch, index) => [ch.id, index]));
+      indices = recents.map((id) => position.get(id)).filter((index): index is number => index !== undefined);
+    } else if (filter === FILTER_FAVORITES) {
+      indices = [];
+      channels.forEach((ch, index) => favorites.has(ch.id) && indices.push(index));
+    } else if (filter === FILTER_ALL) {
+      indices = channels.map((_, index) => index);
+    } else {
+      indices = [];
+      channels.forEach((ch, index) => (ch.group || UNCATEGORIZED) === filter && indices.push(index));
+    }
+    if (q) indices = indices.filter((index) => searchIndex[index].includes(q));
+    return indices.map((index) => channels[index]);
+  }, [channels, searchIndex, deferredSearch, filter, favorites, recents]);
+
+  // If the selected group disappears after a reload, fall back to all channels.
+  useEffect(() => {
+    if (filter !== FILTER_ALL && filter !== FILTER_FAVORITES && filter !== FILTER_RECENT && !groups.some(([name]) => name === filter)) {
+      setFilter(FILTER_ALL);
+    }
+  }, [groups, filter]);
 
   const stopSecondaryPlayback = async () => {
     if (!isTauriRuntime()) return;
@@ -142,12 +259,17 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
     }
   };
 
-  const playChannel = async (channel: Channel) => {
-    if (!selectedSubscription?.id) return;
+  const playChannel = async (channel: Channel, subscriptionId: number | '' = selectedSubIdRef.current) => {
+    if (!subscriptionId) return;
+    const seq = ++playSeqRef.current;
+    window.clearTimeout(zapTimerRef.current);
+    setZapTargetId(null);
+    setCurrentChannel(channel);
     try {
       await stopSecondaryPlayback();
-      const url = await api.resolveChannelStream(selectedSubscription.id, channel);
-      setCurrentChannel(channel);
+      const url = await api.resolveChannelStream(Number(subscriptionId), channel);
+      // A newer channel was requested while this one was resolving.
+      if (seq !== playSeqRef.current) return;
       setActiveStreamUrl(url);
       setExternalPlayback(false);
 
@@ -162,14 +284,126 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
         } catch (bridgeError) {
           onStatus(`VLC bridge could not start. Trying direct WebView playback. ${String(bridgeError)}`);
         }
+        if (seq !== playSeqRef.current) return;
       }
 
       setCurrentUrl(playbackUrl);
       onStatus(usedBridge ? `Playing ${channel.name} through local VLC bridge.` : `Playing ${channel.name}.`);
+      api.recordRecent(Number(subscriptionId), channel.id)
+        .then(() => setRecents((prev) => [channel.id, ...prev.filter((id) => id !== channel.id)].slice(0, 30)))
+        .catch(() => undefined);
+    } catch (err) {
+      if (seq === playSeqRef.current) onStatus(String(err));
+    }
+  };
+
+  const toggleFavorite = async (channel: Channel) => {
+    if (!selectedSubId) return;
+    try {
+      const isFavorite = await api.toggleFavorite(Number(selectedSubId), channel.id);
+      setFavorites((prev) => {
+        const next = new Set(prev);
+        if (isFavorite) next.add(channel.id);
+        else next.delete(channel.id);
+        return next;
+      });
+      onStatus(isFavorite ? `${channel.name} added to favorites.` : `${channel.name} removed from favorites.`);
     } catch (err) {
       onStatus(String(err));
     }
   };
+
+  const changeSubscription = (id: number | '') => {
+    setSelectedSubId(id);
+    selectedSubIdRef.current = id;
+    setFilter(FILTER_ALL);
+    setSearch('');
+    if (id) {
+      handleLoadChannels(id).catch(() => undefined);
+    } else {
+      setChannels([]);
+    }
+  };
+
+  /** Moves the selection with the keyboard and starts playback once the user stops pressing keys. */
+  const zap = (delta: number) => {
+    const list = filteredChannels;
+    if (list.length === 0) return;
+    const fromId = zapTargetId ?? currentChannel?.id;
+    const index = list.findIndex((ch) => ch.id === fromId);
+    const nextIndex = index < 0 ? (delta > 0 ? 0 : list.length - 1) : (index + delta + list.length) % list.length;
+    const next = list[nextIndex];
+    setZapTargetId(next.id);
+    channelListRef.current?.scrollToIndex(nextIndex);
+    onStatus(`Switching to ${next.name}...`);
+    window.clearTimeout(zapTimerRef.current);
+    zapTimerRef.current = window.setTimeout(() => {
+      playChannel(next).catch(() => undefined);
+    }, ZAP_DELAY_MS);
+  };
+
+  const keyHandlerRef = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  keyHandlerRef.current = (event: KeyboardEvent) => {
+    const target = event.target as HTMLElement | null;
+    const typing = !!target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable);
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+      return;
+    }
+    if (typing) {
+      if (event.key === 'Escape' && target === searchInputRef.current) {
+        setSearch('');
+        searchInputRef.current?.blur();
+      }
+      return;
+    }
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault();
+        zap(1);
+        break;
+      case 'ArrowUp':
+        event.preventDefault();
+        zap(-1);
+        break;
+      case 'f':
+      case 'F':
+        event.preventDefault();
+        videoSurfaceRef.current?.requestFullscreen().catch(() => undefined);
+        break;
+      case 'm':
+      case 'M': {
+        if (!videoSurfaceRef.current) break;
+        const muted = videoSurfaceRef.current.toggleMute();
+        onStatus(muted ? 'Sound muted.' : 'Sound on.');
+        break;
+      }
+      case 'r':
+      case 'R':
+        if (currentChannel) playChannel(currentChannel).catch(() => undefined);
+        break;
+      case '/':
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        break;
+      default:
+        break;
+    }
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    const onKeyDown = (event: KeyboardEvent) => keyHandlerRef.current(event);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [active]);
+
+  useEffect(() => () => window.clearTimeout(zapTimerRef.current), []);
 
   const detachPlayer = async () => {
     if (!currentUrl || !currentChannel) {
@@ -197,15 +431,29 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
     onStatus('Opened in VLC. Embedded playback stopped.');
   };
 
+  const emptyMessage = channels.length === 0
+    ? (loading ? 'Loading channels...' : 'No channels loaded. Select a subscription and refresh.')
+    : filter === FILTER_FAVORITES && favorites.size === 0
+      ? 'No favorites yet. Use the star next to a channel to add it.'
+      : filter === FILTER_RECENT && recents.length === 0
+        ? 'No recently watched channels yet.'
+        : 'No channels match this search.';
+
   return (
     <div className="grid h-[calc(100vh-112px)] min-h-[620px] grid-cols-[320px_minmax(0,1fr)] items-stretch gap-5">
       <section className="flex h-full min-h-0 flex-col rounded-[1.75rem] border border-white/10 bg-white/[0.04] p-3 shadow-2xl shadow-black/20 light:border-slate-200 light:bg-white">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-black">Channels</h2>
-            <p className="text-xs text-slate-500">Load, search and play streams.</p>
+            <p className="text-xs text-slate-500">
+              {channels.length > 0 ? `${filteredChannels.length} of ${channels.length} channels` : 'Load, search and play streams.'}
+            </p>
           </div>
-          <button onClick={() => handleLoadChannels()} className="rounded-xl border border-white/10 bg-white/5 p-2 text-slate-300 hover:bg-white/10 light:border-slate-200 light:bg-slate-50 light:text-slate-700">
+          <button
+            onClick={() => handleLoadChannels(selectedSubId, true)}
+            title="Download the channel list again from the provider"
+            className="rounded-xl border border-white/10 bg-white/5 p-2 text-slate-300 hover:bg-white/10 light:border-slate-200 light:bg-slate-50 light:text-slate-700"
+          >
             <RefreshCw size={18} className={cn(loading && 'animate-spin')} />
           </button>
         </div>
@@ -213,7 +461,7 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
         <select
           className="mb-2 w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2.5 text-sm outline-none light:border-slate-200 light:bg-white"
           value={selectedSubId}
-          onChange={(event) => setSelectedSubId(Number(event.target.value))}
+          onChange={(event) => changeSubscription(event.target.value ? Number(event.target.value) : '')}
         >
           <option value="">Select subscription</option>
           {subscriptions.map((sub) => (
@@ -221,42 +469,42 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
           ))}
         </select>
 
-        <div className="mb-2 flex gap-2">
-          <button onClick={() => handleLoadChannels()} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-cyan-400 px-3 py-2.5 text-sm font-black text-slate-950 hover:bg-cyan-300">
-            <RefreshCw size={16} /> Load channels
-          </button>
-        </div>
+        <select
+          className="mb-2 w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2.5 text-sm outline-none light:border-slate-200 light:bg-white"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          disabled={channels.length === 0}
+        >
+          <option value={FILTER_ALL}>All channels ({channels.length})</option>
+          <option value={FILTER_FAVORITES}>★ Favorites ({favorites.size})</option>
+          <option value={FILTER_RECENT}>Recently watched</option>
+          {groups.map(([name, count]) => (
+            <option key={name} value={name}>{name} ({count})</option>
+          ))}
+        </select>
 
         <div className="relative mb-2">
           <Search className="absolute left-3 top-3.5 text-slate-500" size={16} />
           <input
+            ref={searchInputRef}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search channels..."
+            placeholder="Search channels... (Ctrl+F)"
             className="w-full rounded-xl border border-white/10 bg-slate-900 py-2.5 pl-10 pr-3 text-sm outline-none light:border-slate-200 light:bg-white"
           />
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto pr-1">
-          {filteredChannels.map((channel) => (
-            <button
-              key={channel.id}
-              onClick={() => playChannel(channel)}
-              className={cn(
-                'mb-1.5 flex w-full items-center gap-2 rounded-xl border p-2 text-left transition-all',
-                currentChannel?.id === channel.id
-                  ? 'border-cyan-400/50 bg-cyan-400/15'
-                  : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.07] light:border-slate-200 light:bg-slate-50 light:hover:bg-slate-100',
-              )}
-            >
-              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-slate-800 text-xs font-black text-cyan-300 light:bg-slate-200 light:text-cyan-700">TV</div>
-              <div className="min-w-0">
-                <div className="truncate text-[13px] font-bold">{channel.name}</div>
-                <div className="truncate text-[11px] text-slate-500">{channel.group || 'Uncategorized'}</div>
-              </div>
-            </button>
-          ))}
-        </div>
+        <ChannelList
+          ref={channelListRef}
+          channels={filteredChannels}
+          selectedId={zapTargetId ?? currentChannel?.id}
+          favorites={favorites}
+          epgNow={epgNow}
+          emptyMessage={emptyMessage}
+          resetKey={`${selectedSubId}|${filter}|${deferredSearch}`}
+          onSelect={(channel) => playChannel(channel)}
+          onToggleFavorite={toggleFavorite}
+        />
       </section>
 
       <section className="min-w-0">
@@ -267,9 +515,12 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
               <p className="text-xs text-slate-500">
                 {isWindowsRuntime ? 'Windows uses a local VLC bridge for in-app playback when needed.' : 'Double-click the video for fullscreen.'}
               </p>
+              <p className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500" title="Keyboard shortcuts">
+                <Keyboard size={13} /> ↑/↓ change channel · F fullscreen · M mute · R restart · Ctrl+F search
+              </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button onClick={() => currentChannel && loadEpgForChannel(currentChannel)} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold hover:bg-white/10 light:border-slate-200 light:bg-slate-50">
+              <button onClick={() => refreshEpg()} title="Download the TV guide again" className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold hover:bg-white/10 light:border-slate-200 light:bg-slate-50">
                 <CalendarDays size={16} /> EPG
               </button>
               <button onClick={() => currentChannel && playChannel(currentChannel)} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold hover:bg-white/10 light:border-slate-200 light:bg-slate-50">
@@ -305,7 +556,7 @@ export function PlayerView({ settings, reloadToken, onStatus }: PlayerViewProps)
               </div>
               {epgLoading && <RefreshCw size={16} className="animate-spin text-cyan-300" />}
             </div>
-            <div ref={epgScrollRef} className="max-h-40 overflow-auto pr-1">
+            <div ref={epgScrollRef} className="relative max-h-40 overflow-auto pr-1">
               {!settings.epgUrl?.trim() ? (
                 <div className="rounded-2xl border border-dashed border-white/10 p-3 text-xs text-slate-500 light:border-slate-200">No EPG source configured.</div>
               ) : epgPrograms.length === 0 ? (

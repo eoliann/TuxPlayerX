@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Channel, EpgProgram, Subscription, SubscriptionInfo, AppSettings, AppInfo } from './types';
+import { Channel, ChannelLoadResult, EpgChannelKey, EpgNow, EpgProgram, Subscription, SubscriptionInfo, AppSettings, AppInfo } from './types';
 
 export const api = {
   appInfo: () => invoke<AppInfo>('app_info'),
@@ -10,8 +10,13 @@ export const api = {
   setDefaultSubscription: (id: number) => invoke<void>('set_default_subscription', { id }),
   getDefaultSubscription: () => invoke<Subscription | null>('get_default_subscription'),
   refreshSubscriptionInfo: (id: number) => invoke<SubscriptionInfo>('refresh_subscription_info', { id }),
-  loadChannels: (id: number) => invoke<Channel[]>('load_channels', { id }),
-  loadEpgPrograms: (channel: Channel) => invoke<EpgProgram[]>('load_epg_programs', { channel }),
+  loadChannels: (id: number, force = false) => invoke<ChannelLoadResult>('load_channels', { id, force }),
+  loadEpgPrograms: (channel: Channel, force = false) => invoke<EpgProgram[]>('load_epg_programs', { channel, force }),
+  loadEpgNow: (channels: EpgChannelKey[]) => invoke<Record<string, EpgNow>>('load_epg_now', { channels }),
+  listFavorites: (subscriptionId: number) => invoke<string[]>('list_favorites', { subscriptionId }),
+  toggleFavorite: (subscriptionId: number, channelId: string) => invoke<boolean>('toggle_favorite', { subscriptionId, channelId }),
+  listRecents: (subscriptionId: number) => invoke<string[]>('list_recents', { subscriptionId }),
+  recordRecent: (subscriptionId: number, channelId: string) => invoke<void>('record_recent', { subscriptionId, channelId }),
   resolveChannelStream: (subscriptionId: number, channel: Channel) =>
     invoke<string>('resolve_channel_stream', { subscriptionId, channel }),
   getSettings: () => invoke<AppSettings>('get_settings'),

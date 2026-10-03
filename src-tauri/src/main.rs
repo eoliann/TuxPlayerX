@@ -17,7 +17,10 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use db::Database;
-use models::{AppInfo, AppSettings, Channel, EpgProgram, Subscription, SubscriptionInfo};
+use models::{AppInfo, AppSettings, Channel, ChannelLoadResult, EpgChannelKey, EpgNow, EpgProgram, Subscription, SubscriptionInfo};
+
+/// Channel lists are served from the local cache for this long before being downloaded again.
+const CHANNEL_CACHE_MAX_AGE_SECS: i64 = 6 * 60 * 60;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -340,7 +343,11 @@ fn list_subscriptions(state: State<AppState>) -> Result<Vec<Subscription>, Strin
 
 #[tauri::command]
 fn save_subscription(state: State<AppState>, subscription: Subscription) -> Result<i64, String> {
-    state.db.lock().map_err(err)?.save_subscription(&subscription).map_err(err)
+    let db = state.db.lock().map_err(err)?;
+    let id = db.save_subscription(&subscription).map_err(err)?;
+    // Source URL or credentials may have changed, so the cached channel list is no longer trustworthy.
+    db.clear_cached_channels(id).map_err(err)?;
+    Ok(id)
 }
 
 #[tauri::command]
@@ -359,10 +366,38 @@ fn get_default_subscription(state: State<AppState>) -> Result<Option<Subscriptio
 }
 
 #[tauri::command]
-async fn load_channels(state: State<'_, AppState>, id: i64) -> Result<Vec<Channel>, String> {
+async fn load_channels(state: State<'_, AppState>, id: i64, force: Option<bool>) -> Result<ChannelLoadResult, String> {
+    if !force.unwrap_or(false) {
+        let cached = state.db.lock().map_err(err)?.get_cached_channels(id, CHANNEL_CACHE_MAX_AGE_SECS).map_err(err)?;
+        if let Some((channels, fetched_at)) = cached {
+            return Ok(ChannelLoadResult { channels, from_cache: true, fetched_at });
+        }
+    }
     let sub = { state.db.lock().map_err(err)?.get_subscription(id).map_err(err)? };
     let sub = sub.ok_or_else(|| "Subscription not found".to_string())?;
-    providers::load_channels(&sub).await.map_err(err)
+    let channels = providers::load_channels(&sub).await.map_err(err)?;
+    let fetched_at = state.db.lock().map_err(err)?.store_cached_channels(id, &channels).map_err(err)?;
+    Ok(ChannelLoadResult { channels, from_cache: false, fetched_at })
+}
+
+#[tauri::command]
+fn list_favorites(state: State<AppState>, subscription_id: i64) -> Result<Vec<String>, String> {
+    state.db.lock().map_err(err)?.list_favorites(subscription_id).map_err(err)
+}
+
+#[tauri::command]
+fn toggle_favorite(state: State<AppState>, subscription_id: i64, channel_id: String) -> Result<bool, String> {
+    state.db.lock().map_err(err)?.toggle_favorite(subscription_id, &channel_id).map_err(err)
+}
+
+#[tauri::command]
+fn list_recents(state: State<AppState>, subscription_id: i64) -> Result<Vec<String>, String> {
+    state.db.lock().map_err(err)?.list_recents(subscription_id).map_err(err)
+}
+
+#[tauri::command]
+fn record_recent(state: State<AppState>, subscription_id: i64, channel_id: String) -> Result<(), String> {
+    state.db.lock().map_err(err)?.record_recent(subscription_id, &channel_id).map_err(err)
 }
 
 #[tauri::command]
@@ -383,9 +418,15 @@ async fn refresh_subscription_info(state: State<'_, AppState>, id: i64) -> Resul
 
 
 #[tauri::command]
-async fn load_epg_programs(state: State<'_, AppState>, channel: Channel) -> Result<Vec<EpgProgram>, String> {
+async fn load_epg_programs(state: State<'_, AppState>, channel: Channel, force: Option<bool>) -> Result<Vec<EpgProgram>, String> {
     let settings = state.db.lock().map_err(err)?.get_settings().map_err(err)?;
-    providers::load_epg_programs(&settings.epg_url, &channel, &settings.epg_timezone_mode, settings.epg_time_offset_minutes).await.map_err(err)
+    providers::load_epg_programs(&settings.epg_url, &channel, &settings.epg_timezone_mode, settings.epg_time_offset_minutes, force.unwrap_or(false)).await.map_err(err)
+}
+
+#[tauri::command]
+async fn load_epg_now(state: State<'_, AppState>, channels: Vec<EpgChannelKey>) -> Result<std::collections::HashMap<String, EpgNow>, String> {
+    let settings = state.db.lock().map_err(err)?.get_settings().map_err(err)?;
+    providers::load_epg_now(&settings.epg_url, &channels, &settings.epg_timezone_mode, settings.epg_time_offset_minutes).await.map_err(err)
 }
 
 #[tauri::command]
@@ -504,6 +545,11 @@ pub fn run() {
             resolve_channel_stream,
             refresh_subscription_info,
             load_epg_programs,
+            load_epg_now,
+            list_favorites,
+            toggle_favorite,
+            list_recents,
+            record_recent,
             get_settings,
             save_settings,
             open_url,

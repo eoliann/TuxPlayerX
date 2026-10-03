@@ -27,6 +27,25 @@ export interface Channel {
   epgId?: string | null;
 }
 
+export interface ChannelLoadResult {
+  channels: Channel[];
+  fromCache: boolean;
+  fetchedAt: number;
+}
+
+export interface EpgChannelKey {
+  id: string;
+  name: string;
+  epgId?: string | null;
+}
+
+export interface EpgNow {
+  title: string;
+  startLabel: string;
+  stopLabel?: string | null;
+  progress?: number | null;
+}
+
 export interface EpgProgram {
   channelId: string;
   title: string;
@@ -56,6 +75,7 @@ export interface AppSettings {
   epgUrl: string;
   epgTimezoneMode: 'auto' | 'local' | 'manual';
   epgTimeOffsetMinutes: number;
+  resumeLastChannel: boolean;
 }
 
 export interface AppInfo {

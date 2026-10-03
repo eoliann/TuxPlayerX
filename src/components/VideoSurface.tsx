@@ -2,6 +2,28 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import Hls from 'hls.js';
 import { Play, RotateCw, TriangleAlert } from 'lucide-react';
 
+// Live-TV oriented hls.js settings, shared by the initial load and the auto-restart path.
+const HLS_CONFIG: Partial<Hls['config']> = {
+  lowLatencyMode: false,
+  backBufferLength: 90,
+  maxBufferLength: 30,
+  maxMaxBufferLength: 60,
+  maxBufferHole: 0.5,
+  liveSyncDurationCount: 3,
+  liveMaxLatencyDurationCount: 8,
+  liveDurationInfinity: true,
+  manifestLoadingMaxRetry: 12,
+  manifestLoadingRetryDelay: 1000,
+  manifestLoadingMaxRetryTimeout: 30000,
+  fragLoadingMaxRetry: 12,
+  fragLoadingRetryDelay: 1000,
+  fragLoadingMaxRetryTimeout: 30000,
+  levelLoadingMaxRetry: 12,
+  levelLoadingRetryDelay: 1000,
+  enableWorker: true,
+  startFragPrefetch: true,
+};
+
 interface VideoSurfaceProps {
   src: string;
   title?: string;
@@ -15,6 +37,7 @@ interface VideoSurfaceProps {
 export interface VideoSurfaceHandle {
   requestPictureInPicture: () => Promise<void>;
   requestFullscreen: () => Promise<void>;
+  toggleMute: () => boolean;
   stop: () => void;
 }
 
@@ -125,6 +148,12 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
   useImperativeHandle(ref, () => ({
     requestPictureInPicture: requestNativePictureInPicture,
     requestFullscreen: requestSmoothFullscreen,
+    toggleMute: () => {
+      const video = videoRef.current;
+      if (!video) return false;
+      video.muted = !video.muted;
+      return video.muted;
+    },
     stop: stopPlayback,
   }));
 
@@ -147,26 +176,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
     const isHls = lower.includes('.m3u8') || lower.includes('m3u8');
 
     if (isHls && Hls.isSupported()) {
-      const hls = new Hls({
-        lowLatencyMode: false,
-        backBufferLength: 90,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
-        maxBufferHole: 0.5,
-        liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 8,
-        liveDurationInfinity: true,
-        manifestLoadingMaxRetry: 12,
-        manifestLoadingRetryDelay: 1000,
-        manifestLoadingMaxRetryTimeout: 30000,
-        fragLoadingMaxRetry: 12,
-        fragLoadingRetryDelay: 1000,
-        fragLoadingMaxRetryTimeout: 30000,
-        levelLoadingMaxRetry: 12,
-        levelLoadingRetryDelay: 1000,
-        enableWorker: true,
-        startFragPrefetch: true,
-      });
+      const hls = new Hls(HLS_CONFIG);
       hlsRef.current = hls;
       hls.loadSource(src);
       hls.attachMedia(video);
@@ -225,26 +235,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       video.load();
       window.setTimeout(() => {
         if (current.toLowerCase().includes('.m3u8') && Hls.isSupported()) {
-          const hls = new Hls({
-            lowLatencyMode: false,
-            backBufferLength: 90,
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-            maxBufferHole: 0.5,
-            liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 8,
-            liveDurationInfinity: true,
-            manifestLoadingMaxRetry: 12,
-            manifestLoadingRetryDelay: 1000,
-            manifestLoadingMaxRetryTimeout: 30000,
-            fragLoadingMaxRetry: 12,
-            fragLoadingRetryDelay: 1000,
-            fragLoadingMaxRetryTimeout: 30000,
-            levelLoadingMaxRetry: 12,
-            levelLoadingRetryDelay: 1000,
-            enableWorker: true,
-            startFragPrefetch: true,
-          });
+          const hls = new Hls(HLS_CONFIG);
           hlsRef.current = hls;
           hls.loadSource(current);
           hls.attachMedia(video);
