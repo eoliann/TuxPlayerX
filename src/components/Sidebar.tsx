@@ -1,8 +1,8 @@
-import { MonitorPlay, ListVideo, Settings, Info, Moon, Sun } from 'lucide-react';
+import { Clapperboard, MonitorPlay, ListVideo, Settings, Info, Moon, Sun } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { APP_NAME, APP_VERSION } from '../lib/appMeta';
 
-export type TabKey = 'player' | 'subscriptions' | 'settings' | 'about';
+export type TabKey = 'player' | 'vod' | 'subscriptions' | 'settings' | 'about';
 
 interface SidebarProps {
   activeTab: TabKey;
@@ -14,6 +14,7 @@ const appIcon = '/icon.png';
 
 const items = [
   { key: 'player' as const, label: 'Player', icon: MonitorPlay },
+  { key: 'vod' as const, label: 'Movies & Series', icon: Clapperboard },
   { key: 'subscriptions' as const, label: 'Subscriptions', icon: ListVideo },
   { key: 'settings' as const, label: 'Settings', icon: Settings },
   { key: 'about' as const, label: 'About', icon: Info },

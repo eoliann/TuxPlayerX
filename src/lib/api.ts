@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Channel, ChannelLoadResult, EpgChannelKey, EpgNow, EpgProgram, Subscription, SubscriptionInfo, AppSettings, AppInfo } from './types';
+import {
+  Channel, ChannelLoadResult, EpgChannelKey, EpgGridItem, EpgNow, EpgProgram, ImportSummary, SeriesInfo, Subscription, SubscriptionInfo,
+  AppSettings, AppInfo, VodCategory, VodDetails, VodItem, VodKind, VodPage, VodPlayRequest,
+} from './types';
 
 export const api = {
   appInfo: () => invoke<AppInfo>('app_info'),
@@ -13,6 +16,15 @@ export const api = {
   loadChannels: (id: number, force = false) => invoke<ChannelLoadResult>('load_channels', { id, force }),
   loadEpgPrograms: (channel: Channel, force = false) => invoke<EpgProgram[]>('load_epg_programs', { channel, force }),
   loadEpgNow: (channels: EpgChannelKey[]) => invoke<Record<string, EpgNow>>('load_epg_now', { channels }),
+  loadEpgGrid: (channels: EpgChannelKey[], from: number, to: number) =>
+    invoke<Record<string, EpgGridItem[]>>('load_epg_grid', { channels, from, to }),
+  resolveCatchupStream: (channel: Channel, start: number, stop: number) => invoke<string>('resolve_catchup_stream', { channel, start, stop }),
+  vodCategories: (subscriptionId: number, kind: VodKind) => invoke<VodCategory[]>('vod_categories', { subscriptionId, kind }),
+  vodItems: (subscriptionId: number, kind: VodKind, categoryId: string, page = 1, force = false) =>
+    invoke<VodPage>('vod_items', { subscriptionId, kind, categoryId, page, force }),
+  vodDetails: (subscriptionId: number, item: VodItem) => invoke<VodDetails>('vod_details', { subscriptionId, item }),
+  seriesInfo: (subscriptionId: number, item: VodItem) => invoke<SeriesInfo>('series_info', { subscriptionId, item }),
+  resolveVodStream: (subscriptionId: number, request: VodPlayRequest) => invoke<string>('resolve_vod_stream', { subscriptionId, request }),
   listFavorites: (subscriptionId: number) => invoke<string[]>('list_favorites', { subscriptionId }),
   toggleFavorite: (subscriptionId: number, channelId: string) => invoke<boolean>('toggle_favorite', { subscriptionId, channelId }),
   listRecents: (subscriptionId: number) => invoke<string[]>('list_recents', { subscriptionId }),
@@ -30,6 +42,8 @@ export const api = {
   stopExternalPlayer: () => invoke<void>('stop_external_player'),
   shutdownPlayback: () => invoke<void>('shutdown_playback'),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
+  exportBackup: () => invoke<string>('export_backup'),
+  importBackup: (content: string) => invoke<ImportSummary>('import_backup', { content }),
 };
 
 export function isTauriRuntime(): boolean {

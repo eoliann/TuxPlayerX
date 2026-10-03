@@ -6,7 +6,8 @@ use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONNECTION, COOKIE, USER_A
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
-use crate::models::{Channel, EpgChannelKey, EpgNow, EpgProgram, Subscription, SubscriptionInfo};
+use crate::models::{Channel, EpgChannelKey, EpgGridItem, EpgNow, EpgProgram, SeriesEpisode, SeriesInfo, SeriesSeason, Subscription, SubscriptionInfo, VodCategory, VodDetails, VodItem, VodPage, VodPlayRequest};
+use crate::xtream;
 
 const MAC_USER_AGENT: &str = "Mozilla/5.0 (QtEmbedded; U; Linux; en-US) AppleWebKit/533.3 (KHTML, like Gecko) MAG254 stbapp ver: 4 rev: 2721 Mobile Safari/533.3";
 /// How long a MAC portal token is reused before a new handshake is made.
@@ -15,7 +16,7 @@ const MAC_SESSION_TTL: Duration = Duration::from_secs(10 * 60);
 const EPG_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Shared HTTP client so connections, DNS lookups and TLS sessions are reused between requests.
-fn http() -> &'static reqwest::Client {
+pub(crate) fn http() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -75,10 +76,54 @@ async fn read_source(source: &str) -> anyhow::Result<String> {
     }
 }
 
+/// Reads an XMLTV guide from a URL or local file, transparently decompressing `.xml.gz` content.
+async fn read_xmltv_source(source: &str) -> anyhow::Result<String> {
+    let bytes = if source.starts_with("http://") || source.starts_with("https://") {
+        http().get(source).send().await?.error_for_status()?.bytes().await?.to_vec()
+    } else {
+        std::fs::read(source)?
+    };
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let mut text = String::new();
+            flate2::read::MultiGzDecoder::new(bytes.as_slice()).read_to_string(&mut text)?;
+            anyhow::Ok(text)
+        })
+        .await?
+    } else {
+        Ok(String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+    }
+}
+
+/// The EPG setting may hold several sources, one per line (or separated by ';').
+fn epg_sources(epg_url: &str) -> Vec<String> {
+    epg_url
+        .split(['\n', ';'])
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 async fn load_m3u_channels(sub: &Subscription) -> anyhow::Result<Vec<Channel>> {
     let source = sub.url.as_deref().ok_or_else(|| anyhow::anyhow!("Missing M3U URL"))?;
     let body = read_source(source).await?;
-    Ok(parse_m3u(&body))
+    let mut channels = parse_m3u(&body);
+
+    // Xtream providers expose which channels keep a TV archive; mark them for catch-up.
+    if let Some(account) = xtream::account(sub) {
+        if let Ok(archive) = account.archive_days().await {
+            for channel in &mut channels {
+                let Some((_, stream_id)) = xtream::parse_stream_url(&channel.stream_url) else { continue };
+                if let Some(days) = archive.get(&stream_id) {
+                    channel.catchup_days = Some(*days);
+                    channel.catchup_type = Some("xc".to_string());
+                }
+            }
+        }
+    }
+    Ok(channels)
 }
 
 /// Builds an id that survives playlist reordering, so favorites and recents keep pointing at the same channel.
@@ -100,13 +145,20 @@ fn parse_m3u(body: &str) -> Vec<Channel> {
     let mut current_logo: Option<String> = None;
     let mut current_group: Option<String> = None;
     let mut current_epg_id: Option<String> = None;
+    let mut current_catchup: (Option<String>, Option<i64>, Option<String>) = (None, None, None);
 
     for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if line.starts_with("#EXTINF") {
-            current_name = Some(line.split_once(',').map(|(_, name)| name.trim().to_string()).unwrap_or_else(|| "Unnamed channel".to_string()));
+            current_name = Some(extinf_title(line).unwrap_or_else(|| "Unnamed channel".to_string()));
             current_logo = extract_attr(line, "tvg-logo");
             current_group = extract_attr(line, "group-title");
             current_epg_id = extract_attr(line, "tvg-id").or_else(|| extract_attr(line, "tvg-name"));
+            let days = extract_attr(line, "catchup-days")
+                .or_else(|| extract_attr(line, "tvg-rec"))
+                .and_then(|d| d.trim().parse::<i64>().ok())
+                .filter(|d| *d > 0);
+            let kind = extract_attr(line, "catchup").map(|k| k.trim().to_ascii_lowercase()).filter(|k| !k.is_empty());
+            current_catchup = (kind.clone(), days.or(kind.as_ref().map(|_| 7)), extract_attr(line, "catchup-source"));
         } else if !line.starts_with('#') {
             let idx = channels.len() + 1;
             let name = current_name.take().unwrap_or_else(|| format!("Channel {idx}"));
@@ -119,10 +171,30 @@ fn parse_m3u(body: &str) -> Vec<Channel> {
                 group,
                 raw_cmd: None,
                 epg_id: current_epg_id.take(),
+                catchup_type: current_catchup.0.take(),
+                catchup_days: current_catchup.1.take(),
+                catchup_source: current_catchup.2.take(),
             });
         }
     }
     channels
+}
+
+/// The channel name is after the first comma that is not inside a quoted attribute
+/// (attributes such as http-user-agent="... KHTML, like Gecko ..." may contain commas).
+fn extinf_title(line: &str) -> Option<String> {
+    let mut in_quotes = false;
+    for (index, c) in line.char_indices() {
+        match c {
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                let title = line[index + 1..].trim();
+                return (!title.is_empty()).then(|| title.to_string());
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn extract_attr(line: &str, key: &str) -> Option<String> {
@@ -396,7 +468,10 @@ async fn load_mac_channels(sub: &Subscription) -> anyhow::Result<Vec<Channel>> {
             .or_else(|| item.get("epg_id"))
             .or_else(|| item.get("id"))
             .and_then(value_to_string);
-        out.push(Channel { id, name, stream_url: clean_stream_url(&raw_cmd), logo, group, raw_cmd: Some(raw_cmd), epg_id });
+        out.push(Channel {
+            id, name, stream_url: clean_stream_url(&raw_cmd), logo, group, raw_cmd: Some(raw_cmd), epg_id,
+            catchup_days: None, catchup_type: None, catchup_source: None,
+        });
     }
 
     if out.is_empty() {
@@ -412,9 +487,9 @@ fn is_playable_url(url: &str) -> bool {
 async fn create_mac_link(sub: &Subscription, cmd: &str) -> anyhow::Result<String> {
     // Try the cached token first; if the portal rejects it, retry once with a fresh handshake.
     let cached = mac_session(sub, false).await?;
-    let result = match request_mac_link(&cached, cmd).await {
+    let result = match request_mac_link(&cached, "itv", cmd, 0).await {
         Ok(url) => Ok(url),
-        Err(_) => request_mac_link(&mac_session(sub, true).await?, cmd).await,
+        Err(_) => request_mac_link(&mac_session(sub, true).await?, "itv", cmd, 0).await,
     };
     result.or_else(|e| {
         let clean_cmd = clean_stream_url(cmd);
@@ -422,12 +497,12 @@ async fn create_mac_link(sub: &Subscription, cmd: &str) -> anyhow::Result<String
     })
 }
 
-async fn request_mac_link(session: &MacPortalSession, cmd: &str) -> anyhow::Result<String> {
+async fn request_mac_link(session: &MacPortalSession, link_type: &str, cmd: &str, series: i64) -> anyhow::Result<String> {
     let params = vec![
-        ("type".to_string(), "itv".to_string()),
+        ("type".to_string(), link_type.to_string()),
         ("action".to_string(), "create_link".to_string()),
         ("cmd".to_string(), cmd.to_string()),
-        ("series".to_string(), "0".to_string()),
+        ("series".to_string(), series.to_string()),
         ("forced_storage".to_string(), "0".to_string()),
         ("disable_ad".to_string(), "0".to_string()),
     ];
@@ -470,6 +545,268 @@ async fn refresh_mac_info(sub: &Subscription) -> anyhow::Result<SubscriptionInfo
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// Catch-up (TV archive)
+// ---------------------------------------------------------------------------------------------
+
+/// Fills an M3U `catchup-source` template with the programme time range.
+fn fill_catchup_template(template: &str, start: DateTime<Utc>, stop: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let local = start.with_timezone(&Local);
+    let duration = (stop - start).num_seconds().max(60);
+    let replacements: Vec<(&str, String)> = vec![
+        ("${start}", start.timestamp().to_string()),
+        ("{utc}", start.timestamp().to_string()),
+        ("{start}", start.timestamp().to_string()),
+        ("${end}", stop.timestamp().to_string()),
+        ("{utcend}", stop.timestamp().to_string()),
+        ("{end}", stop.timestamp().to_string()),
+        ("${timestamp}", now.timestamp().to_string()),
+        ("${now}", now.timestamp().to_string()),
+        ("{lutc}", now.timestamp().to_string()),
+        ("{now}", now.timestamp().to_string()),
+        ("${duration}", duration.to_string()),
+        ("{duration:60}", (duration / 60).to_string()),
+        ("{duration}", duration.to_string()),
+        ("${offset}", (now - start).num_seconds().to_string()),
+        ("{offset}", (now - start).num_seconds().to_string()),
+        ("{Y}", local.format("%Y").to_string()),
+        ("{m}", local.format("%m").to_string()),
+        ("{d}", local.format("%d").to_string()),
+        ("{H}", local.format("%H").to_string()),
+        ("{M}", local.format("%M").to_string()),
+        ("{S}", local.format("%S").to_string()),
+    ];
+    replacements.iter().fold(template.to_string(), |text, (key, value)| text.replace(key, value))
+}
+
+fn append_query(url: &str, query: &str) -> String {
+    let query = query.trim_start_matches(['?', '&']);
+    format!("{url}{}{query}", if url.contains('?') { '&' } else { '?' })
+}
+
+pub async fn resolve_catchup_stream(channel: &Channel, start: DateTime<Utc>, stop: DateTime<Utc>) -> anyhow::Result<String> {
+    if start >= Utc::now() {
+        anyhow::bail!("This programme has not aired yet.");
+    }
+    let kind = channel.catchup_type.as_deref().map(str::to_ascii_lowercase);
+    let source = channel.catchup_source.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    match (kind.as_deref(), source) {
+        (Some("xc") | Some("xtream"), _) | (None, None) if channel.catchup_days.is_some() => {
+            let (account, stream_id) = xtream::parse_stream_url(&channel.stream_url)
+                .ok_or_else(|| anyhow::anyhow!("Cannot detect the Xtream stream id for this channel."))?;
+            Ok(account.timeshift_url(&stream_id, start, stop).await)
+        }
+        (Some("default"), Some(template)) => Ok(fill_catchup_template(template, start, stop)),
+        (Some("append"), Some(template)) => {
+            let suffix = fill_catchup_template(template, start, stop);
+            Ok(if suffix.starts_with('?') || suffix.starts_with('&') { append_query(&channel.stream_url, &suffix) } else { format!("{}{suffix}", channel.stream_url) })
+        }
+        (Some("shift") | Some("default") | Some("append"), _) => Ok(append_query(
+            &channel.stream_url,
+            &format!("utc={}&lutc={}", start.timestamp(), Utc::now().timestamp()),
+        )),
+        (Some(other), _) => anyhow::bail!("Catch-up type '{other}' is not supported yet."),
+        _ => anyhow::bail!("This channel has no TV archive."),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Movies & series (VOD)
+// ---------------------------------------------------------------------------------------------
+
+const VOD_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+
+fn vod_cache() -> &'static StdMutex<HashMap<String, (Instant, Vec<VodItem>)>> {
+    static CACHE: OnceLock<StdMutex<HashMap<String, (Instant, Vec<VodItem>)>>> = OnceLock::new();
+    CACHE.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn require_xtream(sub: &Subscription) -> anyhow::Result<xtream::XtreamAccount> {
+    xtream::account(sub).ok_or_else(|| anyhow::anyhow!(
+        "Movies and series need an Xtream subscription (M3U URL with username and password) or a MAC portal."
+    ))
+}
+
+pub async fn vod_categories(sub: &Subscription, kind: &str) -> anyhow::Result<Vec<VodCategory>> {
+    let mut categories = vec![VodCategory { id: "*".to_string(), name: "All".to_string() }];
+    if sub.sub_type == "mac" {
+        categories.extend(mac_vod_categories(sub).await?);
+    } else {
+        categories.extend(require_xtream(sub)?.categories(kind).await?);
+    }
+    Ok(categories)
+}
+
+pub async fn vod_items(sub: &Subscription, kind: &str, category_id: &str, page: u32, force: bool) -> anyhow::Result<VodPage> {
+    if sub.sub_type == "mac" {
+        return mac_vod_items(sub, kind, category_id, page.max(1)).await;
+    }
+    // Xtream returns a whole category at once; keep it in memory so browsing back and forth is instant.
+    let key = format!("{}|{}|{kind}|{category_id}", sub.id.unwrap_or_default(), sub.url.as_deref().unwrap_or_default());
+    if !force {
+        if let Some((loaded, items)) = vod_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+            if loaded.elapsed() < VOD_CACHE_TTL {
+                return Ok(VodPage { items, has_more: false });
+            }
+        }
+    }
+    let items = require_xtream(sub)?.items(kind, category_id).await?;
+    if let Ok(mut cache) = vod_cache().lock() {
+        cache.insert(key, (Instant::now(), items.clone()));
+    }
+    Ok(VodPage { items, has_more: false })
+}
+
+pub async fn vod_details(sub: &Subscription, item: &VodItem) -> anyhow::Result<VodDetails> {
+    if sub.sub_type == "mac" {
+        return Ok(VodDetails { plot: item.plot.clone(), rating: item.rating.clone(), release_date: item.year.clone(), ..Default::default() });
+    }
+    require_xtream(sub)?.movie_details(&item.id).await
+}
+
+pub async fn series_info(sub: &Subscription, item: &VodItem) -> anyhow::Result<SeriesInfo> {
+    if sub.sub_type == "mac" {
+        // MAC portals store a series as one VOD item with a list of episode numbers.
+        let episodes = item.episodes.clone().unwrap_or_default().into_iter().map(|number| SeriesEpisode {
+            id: format!("{}-{number}", item.id),
+            number,
+            title: format!("Episode {number}"),
+            extension: None,
+            plot: None,
+            duration: None,
+            poster: None,
+            cmd: item.cmd.clone(),
+        }).collect();
+        return Ok(SeriesInfo {
+            name: item.name.clone(),
+            poster: item.poster.clone(),
+            plot: item.plot.clone(),
+            seasons: vec![SeriesSeason { number: 1, name: "Episodes".to_string(), episodes }],
+        });
+    }
+    require_xtream(sub)?.series_info(&item.id).await
+}
+
+pub async fn resolve_vod_stream(sub: &Subscription, request: &VodPlayRequest) -> anyhow::Result<String> {
+    if sub.sub_type == "mac" {
+        let cmd = request.cmd.as_deref().ok_or_else(|| anyhow::anyhow!("Missing VOD command"))?;
+        let series = request.episode_number.unwrap_or(0);
+        let cached = mac_session(sub, false).await?;
+        return match request_mac_link(&cached, "vod", cmd, series).await {
+            Ok(url) => Ok(url),
+            Err(_) => request_mac_link(&mac_session(sub, true).await?, "vod", cmd, series).await,
+        };
+    }
+    let account = require_xtream(sub)?;
+    let url = match request.kind.as_str() {
+        "episode" => account.episode_url(&request.id, request.extension.as_deref()),
+        _ => account.movie_url(&request.id, request.extension.as_deref()),
+    };
+    ensure_vod_available(&url).await?;
+    Ok(url)
+}
+
+/// Some providers list a VOD catalogue but answer every movie request with an empty HTML page
+/// (typically when the package does not include movies/series). Detect that up front so the user
+/// gets a clear message instead of a generic player error. Network errors are ignored here and
+/// left to the player.
+async fn ensure_vod_available(url: &str) -> anyhow::Result<()> {
+    let Ok(response) = http()
+        .get(url)
+        .header(reqwest::header::RANGE, "bytes=0-1")
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+    else {
+        return Ok(());
+    };
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if status.is_client_error() || status.is_server_error() {
+        anyhow::bail!("The provider refused this title (HTTP {}). Your subscription may not include movies/series.", status.as_u16());
+    }
+    if content_type.starts_with("text/html") || content_type.starts_with("text/plain") {
+        anyhow::bail!("The provider returned no video for this title. Your subscription may not include movies/series.");
+    }
+    Ok(())
+}
+
+fn portal_origin(sub: &Subscription) -> String {
+    sub.portal_url
+        .as_deref()
+        .and_then(|u| Url::parse(u.trim()).ok())
+        .map(|u| format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or_default(), u.port().map(|p| format!(":{p}")).unwrap_or_default()))
+        .unwrap_or_default()
+}
+
+async fn mac_vod_categories(sub: &Subscription) -> anyhow::Result<Vec<VodCategory>> {
+    let session = mac_session(sub, false).await?;
+    let params = vec![("type".to_string(), "vod".to_string()), ("action".to_string(), "get_categories".to_string())];
+    let payload = mac_request(&session, params).await?;
+    let js = js_payload(&payload);
+    let data = js.get("data").unwrap_or(js);
+    Ok(data
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let id = c.get("id").and_then(value_to_string)?;
+            (id != "*").then(|| VodCategory { id, name: c.get("title").and_then(value_to_string).unwrap_or_else(|| "Untitled".to_string()) })
+        })
+        .collect())
+}
+
+async fn mac_vod_items(sub: &Subscription, kind: &str, category_id: &str, page: u32) -> anyhow::Result<VodPage> {
+    let session = mac_session(sub, false).await?;
+    let params = vec![
+        ("type".to_string(), "vod".to_string()),
+        ("action".to_string(), "get_ordered_list".to_string()),
+        ("category".to_string(), category_id.to_string()),
+        ("genre".to_string(), "*".to_string()),
+        ("sortby".to_string(), "added".to_string()),
+        ("p".to_string(), page.to_string()),
+    ];
+    let payload = mac_request(&session, params).await?;
+    let js = js_payload(&payload);
+    let total = js.get("total_items").and_then(value_to_i64).unwrap_or(0);
+    let per_page = js.get("max_page_items").and_then(value_to_i64).unwrap_or(14).max(1);
+    let origin = portal_origin(sub);
+    let absolute = |path: String| if path.starts_with("http") { path } else { format!("{origin}{}{path}", if path.starts_with('/') { "" } else { "/" }) };
+    let items = js
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let text = |keys: &[&str]| keys.iter().find_map(|k| item.get(*k).and_then(value_to_string)).filter(|v| !v.trim().is_empty());
+            let episodes: Vec<i64> = item.get("series").and_then(Value::as_array).into_iter().flatten().filter_map(value_to_i64).collect();
+            let is_series = !episodes.is_empty() || text(&["is_series"]).as_deref() == Some("1");
+            if (kind == "series") != is_series {
+                return None;
+            }
+            Some(VodItem {
+                id: text(&["id"])?,
+                name: text(&["name", "o_name"]).unwrap_or_else(|| "Untitled".to_string()),
+                kind: kind.to_string(),
+                poster: text(&["screenshot_uri", "cover_big"]).map(absolute),
+                rating: text(&["rating_imdb", "rating_kinopoisk"]).filter(|r| r != "0" && r != "N/A"),
+                year: text(&["year"]),
+                plot: text(&["description"]),
+                extension: None,
+                cmd: text(&["cmd"]),
+                episodes: (!episodes.is_empty()).then_some(episodes),
+            })
+        })
+        .collect();
+    Ok(VodPage { items, has_more: (page as i64) * per_page < total })
+}
+
 /// One `<programme>` entry from the XMLTV file, kept in memory between channel switches.
 struct EpgEntry {
     channel_id: String,
@@ -488,6 +825,61 @@ struct EpgIndex {
     programmes: HashMap<String, Vec<EpgEntry>>,
     /// Normalized channel id or display-name -> normalized XMLTV channel ids.
     aliases: HashMap<String, Vec<String>>,
+    /// Loose key (see `loose_name_key` / `loose_id_key`) -> normalized XMLTV channel id.
+    /// Used only when the exact match finds nothing.
+    loose_aliases: HashMap<String, String>,
+}
+
+/// Words dropped from the end of channel names before loose matching ("Antena 1 HD" -> "antena1").
+const QUALITY_WORDS: &[&str] = &[
+    "hd", "sd", "fhd", "uhd", "4k", "8k", "hevc", "h264", "h265", "fibra", "backup", "raw", "hq", "lq",
+    "1080p", "1080i", "720p", "576p", "480p", "360p", "50fps", "60fps",
+];
+
+fn loose_words_key(text: &str) -> String {
+    // Drop bracketed parts such as "(Romania)" or "[Geo-blocked]".
+    let mut plain = String::new();
+    let mut depth = 0usize;
+    for c in text.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => plain.push(c),
+            _ => {}
+        }
+    }
+    let mut words: Vec<&str> = plain.split(|c: char| !c.is_alphanumeric() && c != '+').filter(|w| !w.is_empty()).collect();
+    while words.len() > 1 && words.last().is_some_and(|w| QUALITY_WORDS.contains(w)) {
+        words.pop();
+    }
+    words.concat()
+}
+
+/// Loose key for a channel name / display-name: ignores a two-letter country prefix ("RO - ", "RO:", "RO|"),
+/// quality suffixes and bracketed text.
+fn loose_name_key(name: &str) -> String {
+    let lower = name.trim().to_lowercase();
+    let chars: Vec<char> = lower.chars().collect();
+    let mut start = 0;
+    if chars.len() > 3 && chars[0].is_ascii_alphabetic() && chars[1].is_ascii_alphabetic() {
+        let mut i = 2;
+        while i < chars.len() && chars[i] == ' ' { i += 1; }
+        if i < chars.len() && matches!(chars[i], '-' | ':' | '|') {
+            start = i + 1;
+        }
+    }
+    loose_words_key(&chars[start..].iter().collect::<String>())
+}
+
+/// Loose key for an XMLTV / tvg-id such as "Antena1.ro" or "Antena1.ro@SD" -> "antena1".
+fn loose_id_key(id: &str) -> String {
+    let lower = id.trim().to_lowercase();
+    let base = lower.split('@').next().unwrap_or_default();
+    let base = match base.rsplit_once('.') {
+        Some((head, tld)) if !head.is_empty() && (2..=3).contains(&tld.len()) && tld.chars().all(|c| c.is_ascii_alphabetic()) => head,
+        _ => base,
+    };
+    loose_words_key(base)
 }
 
 struct EpgCacheEntry {
@@ -504,10 +896,12 @@ fn epg_cache() -> &'static tokio::sync::Mutex<Option<EpgCacheEntry>> {
 /// Returns the parsed guide, downloading it only when it is missing, stale or `force` is set.
 /// The async mutex also makes concurrent callers wait for a single download instead of starting several.
 async fn epg_index(epg_url: &str, force: bool) -> anyhow::Result<Arc<EpgIndex>> {
-    let source = epg_url.trim();
-    if source.is_empty() {
+    let sources = epg_sources(epg_url);
+    if sources.is_empty() {
         anyhow::bail!("Set an XMLTV EPG URL in Settings first.");
     }
+    let source = sources.join("\n");
+    let source = source.as_str();
 
     let mut cache = epg_cache().lock().await;
     if let Some(entry) = cache.as_ref() {
@@ -517,8 +911,25 @@ async fn epg_index(epg_url: &str, force: bool) -> anyhow::Result<Arc<EpgIndex>> 
     }
 
     let loaded = async {
-        let xml = read_source(source).await?;
-        let index = tokio::task::spawn_blocking(move || build_epg_index(&xml)).await??;
+        // Download all sources in parallel; a failing source is skipped as long as another one works.
+        let downloads: Vec<_> = sources
+            .iter()
+            .cloned()
+            .map(|source| tokio::spawn(async move { read_xmltv_source(&source).await.map_err(|e| format!("{source}: {e}")) }))
+            .collect();
+        let mut documents = Vec::new();
+        let mut errors = Vec::new();
+        for download in downloads {
+            match download.await {
+                Ok(Ok(xml)) => documents.push(xml),
+                Ok(Err(e)) => errors.push(e),
+                Err(e) => errors.push(e.to_string()),
+            }
+        }
+        if documents.is_empty() {
+            anyhow::bail!("Could not load any EPG source. {}", errors.join("; "));
+        }
+        let index = tokio::task::spawn_blocking(move || build_epg_index(&documents)).await??;
         anyhow::Ok(Arc::new(index))
     }
     .await;
@@ -536,9 +947,14 @@ async fn epg_index(epg_url: &str, force: bool) -> anyhow::Result<Arc<EpgIndex>> 
     }
 }
 
-fn build_epg_index(xml: &str) -> anyhow::Result<EpgIndex> {
-    let doc = roxmltree::Document::parse(xml)?;
+fn build_epg_index(documents: &[String]) -> anyhow::Result<EpgIndex> {
     let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
+    let mut loose_aliases: HashMap<String, String> = HashMap::new();
+    let mut add_loose = |key: String, channel_key: &str| {
+        if !key.is_empty() && !channel_key.is_empty() {
+            loose_aliases.entry(key).or_insert_with(|| channel_key.to_string());
+        }
+    };
     let mut add_alias = |alias: &str, channel_key: &str| {
         let alias = normalize_epg_key(alias);
         if alias.is_empty() || channel_key.is_empty() { return; }
@@ -548,50 +964,73 @@ fn build_epg_index(xml: &str) -> anyhow::Result<EpgIndex> {
         }
     };
 
-    for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "channel") {
-        let Some(id) = node.attribute("id") else { continue };
-        let channel_key = normalize_epg_key(id);
-        add_alias(id, &channel_key);
-        for display in node.children().filter(|child| child.is_element() && child.tag_name().name() == "display-name") {
-            if let Some(text) = node_text(display) {
-                add_alias(&text, &channel_key);
-            }
-        }
-    }
-
     // Only keep a window around "now"; the margin covers any manual offset (max ±12h).
     let now = Utc::now();
     let min_time = now - ChronoDuration::hours(24);
     let max_time = now + ChronoDuration::days(4);
     let mut programmes: HashMap<String, Vec<EpgEntry>> = HashMap::new();
+    let mut parsed_any = false;
+    let mut last_error = None;
 
-    for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "programme") {
-        let channel_id = node.attribute("channel").unwrap_or_default();
-        let channel_key = normalize_epg_key(channel_id);
-        if channel_key.is_empty() { continue; }
-        let Some(start_raw) = node.attribute("start") else { continue };
-        let Some(start_auto) = parse_xmltv_datetime_auto(start_raw) else { continue };
-        let stop_raw = node.attribute("stop").map(str::to_string);
-        let stop_auto = stop_raw.as_deref().and_then(parse_xmltv_datetime_auto);
-        if start_auto > max_time || stop_auto.unwrap_or(start_auto) < min_time { continue; }
+    for xml in documents {
+        let doc = match roxmltree::Document::parse(xml) {
+            Ok(doc) => doc,
+            Err(e) => {
+                last_error = Some(e);
+                continue;
+            }
+        };
+        parsed_any = true;
 
-        programmes.entry(channel_key).or_default().push(EpgEntry {
-            channel_id: channel_id.to_string(),
-            title: first_child_text(node, "title").unwrap_or_else(|| "Untitled programme".to_string()),
-            subtitle: first_child_text(node, "sub-title"),
-            description: first_child_text(node, "desc"),
-            start_raw: start_raw.to_string(),
-            stop_raw,
-            start_auto,
-            stop_auto,
-        });
+        for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "channel") {
+            let Some(id) = node.attribute("id") else { continue };
+            let channel_key = normalize_epg_key(id);
+            add_alias(id, &channel_key);
+            add_loose(loose_id_key(id), &channel_key);
+            for display in node.children().filter(|child| child.is_element() && child.tag_name().name() == "display-name") {
+                if let Some(text) = node_text(display) {
+                    add_alias(&text, &channel_key);
+                    add_loose(loose_name_key(&text), &channel_key);
+                }
+            }
+        }
+
+        for node in doc.descendants().filter(|node| node.is_element() && node.tag_name().name() == "programme") {
+            let channel_id = node.attribute("channel").unwrap_or_default();
+            let channel_key = normalize_epg_key(channel_id);
+            if channel_key.is_empty() { continue; }
+            let Some(start_raw) = node.attribute("start") else { continue };
+            let Some(start_auto) = parse_xmltv_datetime_auto(start_raw) else { continue };
+            let stop_raw = node.attribute("stop").map(str::to_string);
+            let stop_auto = stop_raw.as_deref().and_then(parse_xmltv_datetime_auto);
+            if start_auto > max_time || stop_auto.unwrap_or(start_auto) < min_time { continue; }
+
+            programmes.entry(channel_key).or_default().push(EpgEntry {
+                channel_id: channel_id.to_string(),
+                title: first_child_text(node, "title").unwrap_or_else(|| "Untitled programme".to_string()),
+                subtitle: first_child_text(node, "sub-title"),
+                description: first_child_text(node, "desc"),
+                start_raw: start_raw.to_string(),
+                stop_raw,
+                start_auto,
+                stop_auto,
+            });
+        }
+    }
+
+    if !parsed_any {
+        if let Some(e) = last_error {
+            return Err(e.into());
+        }
     }
 
     for list in programmes.values_mut() {
         list.sort_by_key(|entry| entry.start_auto);
+        // The same programme can appear in several sources; keep the first one.
+        list.dedup_by(|a, b| a.start_auto == b.start_auto);
     }
 
-    Ok(EpgIndex { programmes, aliases })
+    Ok(EpgIndex { programmes, aliases, loose_aliases })
 }
 
 /// Same matching rules as before: tvg-id / portal EPG id, channel id and channel name are compared
@@ -612,6 +1051,17 @@ fn epg_entries_for<'a>(index: &'a EpgIndex, id: &str, name: &str, epg_id: Option
         if let Some(channel_keys) = index.aliases.get(key.as_str()) {
             for channel_key in channel_keys {
                 programme_keys.insert(channel_key.as_str());
+            }
+        }
+    }
+
+    // Nothing matched exactly: fall back to the loose keys ("ANTENA 1 HD" -> "RO - Antena 1").
+    if !programme_keys.iter().any(|key| index.programmes.contains_key(*key)) {
+        let loose_keys = [epg_id.map(loose_id_key), epg_id.map(loose_name_key), Some(loose_name_key(name))];
+        for key in loose_keys.into_iter().flatten().filter(|key| !key.is_empty()) {
+            if let Some(channel_key) = index.loose_aliases.get(&key) {
+                programme_keys.insert(channel_key.as_str());
+                break;
             }
         }
     }
@@ -681,6 +1131,39 @@ pub async fn load_epg_programs(
     }
 
     Ok(programs)
+}
+
+/// Programmes between `from` and `to` (Unix seconds) for the channels shown in the TV guide grid.
+pub async fn load_epg_grid(
+    epg_url: &str,
+    channels: &[EpgChannelKey],
+    from: i64,
+    to: i64,
+    timezone_mode: &str,
+    manual_offset_minutes: i64,
+) -> anyhow::Result<HashMap<String, Vec<EpgGridItem>>> {
+    let index = epg_index(epg_url, false).await?;
+    let mut out = HashMap::new();
+    for channel in channels {
+        let items: Vec<EpgGridItem> = epg_entries_for(&index, &channel.id, &channel.name, channel.epg_id.as_deref())
+            .into_iter()
+            .filter_map(|entry| {
+                let (start, stop) = entry_times(entry, timezone_mode, manual_offset_minutes)?;
+                // Programmes without a stop time are shown as 30 minutes long.
+                let stop = stop.unwrap_or(start + ChronoDuration::minutes(30));
+                (stop.timestamp() > from && start.timestamp() < to).then(|| EpgGridItem {
+                    title: entry.title.clone(),
+                    description: entry.description.clone(),
+                    start: start.timestamp(),
+                    stop: stop.timestamp(),
+                })
+            })
+            .collect();
+        if !items.is_empty() {
+            out.insert(channel.id.clone(), items);
+        }
+    }
+    Ok(out)
 }
 
 /// Current programme for many channels at once, used to show "now playing" in the channel list.
@@ -802,7 +1285,7 @@ fn first_value_in(value: &Value, keys: &[&str]) -> Option<String> {
     None
 }
 
-fn value_to_string(value: &Value) -> Option<String> {
+pub(crate) fn value_to_string(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
@@ -811,7 +1294,7 @@ fn value_to_string(value: &Value) -> Option<String> {
     }
 }
 
-fn value_to_i64(value: &Value) -> Option<i64> {
+pub(crate) fn value_to_i64(value: &Value) -> Option<i64> {
     match value {
         Value::Number(n) => n.as_i64(),
         Value::String(s) => parse_i64(s),
@@ -865,6 +1348,91 @@ mod tests {
     }
 
     #[test]
+    fn parses_catchup_attributes_and_builds_urls() {
+        let channels = parse_m3u(concat!(
+            "#EXTINF:-1 catchup=\"append\" catchup-days=\"3\" catchup-source=\"?utc={utc}&lutc={lutc}\",Arch\nhttp://s/a.m3u8\n",
+            "#EXTINF:-1 tvg-rec=\"5\",Rec\nhttp://s/b.m3u8\n",
+            "#EXTINF:-1,Plain\nhttp://s/c.m3u8\n",
+        ));
+        assert_eq!(channels[0].catchup_type.as_deref(), Some("append"));
+        assert_eq!(channels[0].catchup_days, Some(3));
+        assert_eq!(channels[1].catchup_days, Some(5));
+        assert!(channels[2].catchup_days.is_none() && channels[2].catchup_type.is_none());
+
+        let start = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let stop = start + ChronoDuration::minutes(30);
+        let filled = fill_catchup_template("http://x/{utc}/{utcend}/{duration}", start, stop);
+        assert_eq!(filled, "http://x/1700000000/1700001800/1800");
+
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let url = runtime.block_on(resolve_catchup_stream(&channels[0], start, stop)).unwrap();
+        assert!(url.starts_with("http://s/a.m3u8?utc=1700000000&lutc="), "{url}");
+    }
+
+    #[test]
+    fn loose_epg_matching_handles_quality_suffixes_and_prefixes() {
+        assert_eq!(loose_name_key("ANTENA 1 HD"), "antena1");
+        assert_eq!(loose_name_key("ANTENA 1 FIBRA"), "antena1");
+        assert_eq!(loose_name_key("RO - Antena 1"), "antena1");
+        assert_eq!(loose_name_key("RO| Pro TV FHD"), "protv");
+        assert_eq!(loose_name_key("Antena 1 (Romania)"), "antena1");
+        assert_eq!(loose_name_key("HBO 3"), "hbo3");
+        assert_eq!(loose_name_key("Pro TV"), "protv");
+        assert_eq!(loose_id_key("Antena1.ro@SD"), "antena1");
+        assert_eq!(loose_id_key("Antena1.ro"), "antena1");
+
+        let now = Utc::now();
+        let xml = format!(
+            r#"<tv><channel id="Antena1.ro"><display-name>RO - Antena 1</display-name></channel>
+               <channel id="AntenaStars.ro"><display-name>RO - Antena Stars</display-name></channel>
+               <programme channel="Antena1.ro" start="{}" stop="{}"><title>Observator</title></programme></tv>"#,
+            xmltv_time(now - ChronoDuration::minutes(5)),
+            xmltv_time(now + ChronoDuration::minutes(55)),
+        );
+        let index = build_epg_index(&[xml]).unwrap();
+        assert_eq!(epg_entries_for(&index, "x", "ANTENA 1 HD", None)[0].title, "Observator");
+        assert_eq!(epg_entries_for(&index, "x", "Antena 1 (Romania)", Some("Antena1.ro@SD"))[0].title, "Observator");
+        assert!(epg_entries_for(&index, "x", "ANTENA 3 HD", None).is_empty());
+    }
+
+    #[test]
+    fn extinf_title_ignores_commas_inside_attributes() {
+        let channels = parse_m3u("#EXTINF:-1 http-user-agent=\"Mozilla/5.0 (KHTML, like Gecko)\" group-title=\"Peru\",Antena 1 (Peru)\nhttp://x/1\n");
+        assert_eq!(channels[0].name, "Antena 1 (Peru)");
+        assert_eq!(channels[0].group.as_deref(), Some("Peru"));
+    }
+
+    #[test]
+    fn epg_sources_split_lines_and_semicolons_but_keep_spaces() {
+        let sources = epg_sources(" https://a/epg.xml \n\n/mnt/My Files/guide.xml.gz;https://b/x.xml ");
+        assert_eq!(sources, vec!["https://a/epg.xml", "/mnt/My Files/guide.xml.gz", "https://b/x.xml"]);
+    }
+
+    #[test]
+    fn reads_gzipped_and_merges_multiple_guides() {
+        use std::io::Write;
+        let now = Utc::now();
+        let guide = |channel: &str, title: &str| format!(
+            r#"<tv><channel id="{channel}"><display-name>{channel}</display-name></channel><programme channel="{channel}" start="{}" stop="{}"><title>{title}</title></programme></tv>"#,
+            xmltv_time(now - ChronoDuration::minutes(10)),
+            xmltv_time(now + ChronoDuration::minutes(10)),
+        );
+        let dir = std::env::temp_dir().join(format!("tuxplayerx-epg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gz_path = dir.join("guide.xml.gz");
+        let mut encoder = flate2::write::GzEncoder::new(std::fs::File::create(&gz_path).unwrap(), flate2::Compression::default());
+        encoder.write_all(guide("alpha", "From gzip").as_bytes()).unwrap();
+        encoder.finish().unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let unzipped = runtime.block_on(read_xmltv_source(gz_path.to_str().unwrap())).unwrap();
+        let index = build_epg_index(&[unzipped, guide("beta", "Plain"), "not xml".to_string()]).unwrap();
+        assert_eq!(epg_entries_for(&index, "x", "alpha", None)[0].title, "From gzip");
+        assert_eq!(epg_entries_for(&index, "x", "beta", None)[0].title, "Plain");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn epg_index_matches_by_id_and_display_name() {
         let now = Utc::now();
         let xml = format!(
@@ -878,7 +1446,7 @@ mod tests {
             xmltv_time(now + ChronoDuration::minutes(30)),
             xmltv_time(now + ChronoDuration::minutes(90)),
         );
-        let index = build_epg_index(&xml).unwrap();
+        let index = build_epg_index(&[xml]).unwrap();
 
         let by_name = epg_entries_for(&index, "mac-1", "Pro TV", None);
         assert_eq!(by_name.len(), 2);
@@ -906,7 +1474,7 @@ mod bench {
         let path = std::env::var("EPG_FILE").expect("set EPG_FILE");
         let xml = std::fs::read_to_string(path).unwrap();
         let started = Instant::now();
-        let index = build_epg_index(&xml).unwrap();
+        let index = build_epg_index(std::slice::from_ref(&xml)).unwrap();
         println!("parse + index: {:?}", started.elapsed());
 
         let doc = roxmltree::Document::parse(&xml).unwrap();
@@ -921,5 +1489,25 @@ mod bench {
             if !epg_entries_for(&index, "x", name, None).is_empty() { found += 1; }
         }
         println!("lookup for {} channels ({} with data): {:?}", names.len(), found, started.elapsed());
+    }
+
+    /// Match report for real channel names: `EPG_FILE=... EPG_NAMES_FILE=names.txt cargo test epg_match_report -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn epg_match_report() {
+        let xml = std::fs::read_to_string(std::env::var("EPG_FILE").expect("set EPG_FILE")).unwrap();
+        let names = std::fs::read_to_string(std::env::var("EPG_NAMES_FILE").expect("set EPG_NAMES_FILE")).unwrap();
+        let index = build_epg_index(&[xml]).unwrap();
+        let (mut matched, mut total) = (0, 0);
+        for line in names.lines().filter(|l| !l.trim().is_empty()) {
+            let (name, epg_id) = line.split_once('\t').map(|(n, e)| (n, (!e.is_empty()).then_some(e))).unwrap_or((line, None));
+            total += 1;
+            let entries = epg_entries_for(&index, "x", name, epg_id);
+            if !entries.is_empty() { matched += 1; }
+            if name.to_lowercase().contains("antena") || name.to_lowercase().contains("pro tv") {
+                println!("{name:30} -> {}", entries.first().map(|e| e.channel_id.as_str()).unwrap_or("-"));
+            }
+        }
+        println!("matched {matched}/{total}");
     }
 }

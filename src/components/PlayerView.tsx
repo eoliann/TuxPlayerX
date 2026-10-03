@@ -1,16 +1,19 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, ExternalLink, Keyboard, Maximize2, Play, RefreshCw, Search } from 'lucide-react';
-import { Channel, EpgNow, EpgProgram, AppSettings, Subscription } from '../lib/types';
+import { CalendarDays, ExternalLink, History, Keyboard, LayoutGrid, Maximize2, Play, Radio, RefreshCw, Search } from 'lucide-react';
+import { Channel, EpgGridItem, EpgNow, EpgProgram, AppSettings, Subscription } from '../lib/types';
 import { api, isTauriRuntime } from '../lib/api';
 import { VideoSurface, VideoSurfaceHandle } from './VideoSurface';
 import { ChannelList, ChannelListHandle } from './ChannelList';
-import { cn } from '../lib/utils';
+import { EpgGrid } from './EpgGrid';
+import { cn, isCatchupAvailable } from '../lib/utils';
 
 interface PlayerViewProps {
   settings: AppSettings;
   reloadToken: number;
   /** False while another page is shown; the player keeps running but keyboard shortcuts are disabled. */
   active: boolean;
+  /** Incremented when another part of the app (e.g. movies) starts playing, so live playback stops. */
+  stopSignal: number;
   onStatus: (status: string) => void;
 }
 
@@ -26,7 +29,7 @@ function formatTime(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerViewProps) {
+export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus }: PlayerViewProps) {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [selectedSubId, setSelectedSubId] = useState<number | ''>('');
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -40,11 +43,15 @@ export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerVi
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [currentUrl, setCurrentUrl] = useState('');
   const [activeStreamUrl, setActiveStreamUrl] = useState('');
-  const [externalPlayback, setExternalPlayback] = useState(false);
+  /** Where the stream runs when it is not in the embedded player. */
+  const [playingElsewhere, setPlayingElsewhere] = useState<'vlc' | 'window' | null>(null);
   const [platform, setPlatform] = useState('web');
   const [loading, setLoading] = useState(false);
   const [epgPrograms, setEpgPrograms] = useState<EpgProgram[]>([]);
   const [epgLoading, setEpgLoading] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
+  /** Set while a programme from the TV archive is playing instead of the live stream. */
+  const [catchup, setCatchup] = useState<{ title: string; start: number } | null>(null);
   const videoSurfaceRef = useRef<VideoSurfaceHandle | null>(null);
   const channelListRef = useRef<ChannelListHandle | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -259,36 +266,48 @@ export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerVi
     }
   };
 
-  const playChannel = async (channel: Channel, subscriptionId: number | '' = selectedSubIdRef.current) => {
-    if (!subscriptionId) return;
+  /** Starts a resolved stream in the embedded player (through the VLC bridge on Windows). */
+  const startStream = async (url: string, seq: number, label: string) => {
+    setActiveStreamUrl(url);
+    setPlayingElsewhere(null);
+
+    let playbackUrl = url;
+    let usedBridge = false;
+
+    if (isWindowsRuntime) {
+      try {
+        onStatus('Starting local VLC bridge for in-app playback...');
+        playbackUrl = await api.startVlcBridge(url);
+        usedBridge = true;
+      } catch (bridgeError) {
+        onStatus(`VLC bridge could not start. Trying direct WebView playback. ${String(bridgeError)}`);
+      }
+      if (seq !== playSeqRef.current) return false;
+    }
+
+    setCurrentUrl(playbackUrl);
+    onStatus(usedBridge ? `Playing ${label} through local VLC bridge.` : `Playing ${label}.`);
+    return true;
+  };
+
+  const beginPlayback = (channel: Channel) => {
     const seq = ++playSeqRef.current;
     window.clearTimeout(zapTimerRef.current);
     setZapTargetId(null);
     setCurrentChannel(channel);
+    return seq;
+  };
+
+  const playChannel = async (channel: Channel, subscriptionId: number | '' = selectedSubIdRef.current) => {
+    if (!subscriptionId) return;
+    const seq = beginPlayback(channel);
+    setCatchup(null);
     try {
       await stopSecondaryPlayback();
       const url = await api.resolveChannelStream(Number(subscriptionId), channel);
       // A newer channel was requested while this one was resolving.
       if (seq !== playSeqRef.current) return;
-      setActiveStreamUrl(url);
-      setExternalPlayback(false);
-
-      let playbackUrl = url;
-      let usedBridge = false;
-
-      if (isWindowsRuntime) {
-        try {
-          onStatus('Starting local VLC bridge for in-app playback...');
-          playbackUrl = await api.startVlcBridge(url);
-          usedBridge = true;
-        } catch (bridgeError) {
-          onStatus(`VLC bridge could not start. Trying direct WebView playback. ${String(bridgeError)}`);
-        }
-        if (seq !== playSeqRef.current) return;
-      }
-
-      setCurrentUrl(playbackUrl);
-      onStatus(usedBridge ? `Playing ${channel.name} through local VLC bridge.` : `Playing ${channel.name}.`);
+      if (!(await startStream(url, seq, channel.name))) return;
       api.recordRecent(Number(subscriptionId), channel.id)
         .then(() => setRecents((prev) => [channel.id, ...prev.filter((id) => id !== channel.id)].slice(0, 30)))
         .catch(() => undefined);
@@ -296,6 +315,34 @@ export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerVi
       if (seq === playSeqRef.current) onStatus(String(err));
     }
   };
+
+  /** Replays a past programme from the channel's TV archive. Times are Unix seconds. */
+  const playCatchup = async (channel: Channel, title: string, start: number, stop: number) => {
+    const seq = beginPlayback(channel);
+    try {
+      await stopSecondaryPlayback();
+      const url = await api.resolveCatchupStream(channel, start, stop);
+      if (seq !== playSeqRef.current) return;
+      setCatchup({ title, start });
+      await startStream(url, seq, `${title} (archive)`);
+    } catch (err) {
+      if (seq === playSeqRef.current) onStatus(`Catch-up failed: ${String(err)}`);
+    }
+  };
+
+  const playGridCatchup = (channel: Channel, item: EpgGridItem) => {
+    setShowGrid(false);
+    playCatchup(channel, item.title, item.start, item.stop).catch(() => undefined);
+  };
+
+  // Stop live playback when movies/series start playing elsewhere in the app.
+  useEffect(() => {
+    if (!stopSignal) return;
+    playSeqRef.current += 1;
+    stopEmbeddedPlayback().catch(() => undefined);
+    stopSecondaryPlayback().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopSignal]);
 
   const toggleFavorite = async (channel: Channel) => {
     if (!selectedSubId) return;
@@ -383,6 +430,22 @@ export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerVi
         onStatus(muted ? 'Sound muted.' : 'Sound on.');
         break;
       }
+      case 'g':
+      case 'G':
+        setShowGrid((value) => !value);
+        break;
+      case 'a':
+      case 'A': {
+        const label = videoSurfaceRef.current?.cycleAudioTrack();
+        onStatus(label ? `Audio: ${label}` : 'This stream has a single audio track.');
+        break;
+      }
+      case 'c':
+      case 'C': {
+        const label = videoSurfaceRef.current?.cycleSubtitles();
+        onStatus(label ? `Subtitles: ${label}` : 'This stream has no subtitles.');
+        break;
+      }
       case 'r':
       case 'R':
         if (currentChannel) playChannel(currentChannel).catch(() => undefined);
@@ -413,10 +476,26 @@ export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerVi
 
     try {
       await videoSurfaceRef.current?.requestPictureInPicture();
-      setExternalPlayback(false);
+      setPlayingElsewhere(null);
+      return;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      onStatus(`Picture-in-Picture is not available. ${message}`);
+      if (!isTauriRuntime()) {
+        const message = err instanceof Error ? err.message : String(err);
+        onStatus(`Picture-in-Picture is not available. ${message}`);
+        return;
+      }
+    }
+
+    // The Linux WebView has no native Picture-in-Picture: use a detached always-on-top window instead.
+    try {
+      await api.openPipWindow(currentUrl, currentChannel.name);
+      // Stop only the embedded video; on Windows the window keeps using the running VLC bridge.
+      videoSurfaceRef.current?.stop();
+      setCurrentUrl('');
+      setPlayingElsewhere('window');
+      onStatus('Playing in a detached window. Press Esc in it or use "Play here" to bring the video back.');
+    } catch (err) {
+      onStatus(`Could not open the detached window. ${String(err)}`);
     }
   };
 
@@ -427,7 +506,7 @@ export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerVi
     }
     await api.openExternalPlayer(activeStreamUrl);
     await stopEmbeddedPlayback();
-    setExternalPlayback(true);
+    setPlayingElsewhere('vlc');
     onStatus('Opened in VLC. Embedded playback stopped.');
   };
 
@@ -507,19 +586,47 @@ export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerVi
         />
       </section>
 
-      <section className="min-w-0">
+      <section className="relative min-w-0">
+        {showGrid && (
+          <EpgGrid
+            channels={filteredChannels}
+            currentChannelId={currentChannel?.id}
+            epgKey={`${settings.epgUrl}|${settings.epgTimezoneMode}|${settings.epgTimeOffsetMinutes}|${epgRevision}`}
+            onPlayChannel={(channel) => {
+              setShowGrid(false);
+              playChannel(channel).catch(() => undefined);
+            }}
+            onPlayCatchup={playGridCatchup}
+            onClose={() => setShowGrid(false)}
+          />
+        )}
         <div className="flex h-full min-h-0 flex-col rounded-[2rem] border border-white/10 bg-white/[0.04] p-4 shadow-2xl shadow-black/20 light:border-slate-200 light:bg-white">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-black">{currentChannel?.name || 'Player'}</h2>
+              <h2 className="flex items-center gap-2 text-lg font-black">
+                {currentChannel?.name || 'Player'}
+                {catchup && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/15 px-2 py-0.5 text-[11px] font-black text-emerald-300 light:text-emerald-700">
+                    <History size={12} /> Archive: {catchup.title} · {new Date(catchup.start * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+              </h2>
               <p className="text-xs text-slate-500">
                 {isWindowsRuntime ? 'Windows uses a local VLC bridge for in-app playback when needed.' : 'Double-click the video for fullscreen.'}
               </p>
               <p className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500" title="Keyboard shortcuts">
-                <Keyboard size={13} /> ↑/↓ change channel · F fullscreen · M mute · R restart · Ctrl+F search
+                <Keyboard size={13} /> ↑/↓ channel · G guide · F fullscreen · M mute · A audio · C subtitles · R restart · Ctrl+F search
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              {catchup && currentChannel && (
+                <button onClick={() => playChannel(currentChannel)} className="flex items-center gap-2 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-sm font-bold hover:bg-emerald-400/20">
+                  <Radio size={16} /> Back to live
+                </button>
+              )}
+              <button onClick={() => setShowGrid((value) => !value)} title="Full TV guide (G)" className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold hover:bg-white/10 light:border-slate-200 light:bg-slate-50">
+                <LayoutGrid size={16} /> TV Guide
+              </button>
               <button onClick={() => refreshEpg()} title="Download the TV guide again" className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold hover:bg-white/10 light:border-slate-200 light:bg-slate-50">
                 <CalendarDays size={16} /> EPG
               </button>
@@ -535,12 +642,20 @@ export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerVi
             </div>
           </div>
           <div className="min-h-[460px] flex-1">
-            {externalPlayback ? (
+            {playingElsewhere ? (
               <div className="grid h-full min-h-[460px] place-items-center rounded-3xl border border-white/10 bg-black text-center text-slate-400 shadow-2xl shadow-black/30 light:border-slate-200">
                 <div className="max-w-md px-6">
-                  <div className="text-lg font-black text-white">Playing in VLC</div>
-                  <div className="mt-2 text-sm">The selected stream is playing externally in VLC.</div>
-                  <div className="mt-4 text-xs text-slate-500">Use Restart, Picture-in-Picture or Open in VLC to control where the stream runs.</div>
+                  <div className="text-lg font-black text-white">{playingElsewhere === 'vlc' ? 'Playing in VLC' : 'Playing in a detached window'}</div>
+                  <div className="mt-2 text-sm">
+                    {playingElsewhere === 'vlc'
+                      ? 'The selected stream is playing externally in VLC.'
+                      : 'The video is playing in a separate always-on-top window that you can move and resize.'}
+                  </div>
+                  {currentChannel && (
+                    <button onClick={() => playChannel(currentChannel)} className="btn-secondary mx-auto mt-4">
+                      <Play size={15} /> Play here
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -586,8 +701,24 @@ export function PlayerView({ settings, reloadToken, active, onStatus }: PlayerVi
                           </div>
                           {program.subtitle && <div className={`truncate text-xs ${program.isNow ? 'text-cyan-200/70 light:text-cyan-700' : 'text-slate-400 light:text-slate-500'}`}>{program.subtitle}</div>}
                         </div>
-                        <div className={`shrink-0 text-xs font-bold ${program.isNow ? 'text-cyan-300 light:text-cyan-700' : 'text-slate-400 light:text-slate-600'}`}>
-                          {program.startLabel}{program.stopLabel ? ` - ${program.stopLabel}` : ''}
+                        <div className="flex shrink-0 items-center gap-2">
+                          {currentChannel && !program.isNow && isCatchupAvailable(currentChannel.catchupDays, Date.parse(program.start) / 1000) && (
+                            <button
+                              onClick={() => playCatchup(
+                                currentChannel,
+                                program.title,
+                                Math.floor(Date.parse(program.start) / 1000),
+                                Math.floor(Date.parse(program.stop || program.start) / 1000) || Math.floor(Date.parse(program.start) / 1000) + 1800,
+                              )}
+                              className="inline-flex items-center gap-1 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] font-bold text-emerald-300 hover:bg-emerald-400/20 light:text-emerald-700"
+                              title="Replay from the TV archive"
+                            >
+                              <History size={12} /> Replay
+                            </button>
+                          )}
+                          <div className={`text-xs font-bold ${program.isNow ? 'text-cyan-300 light:text-cyan-700' : 'text-slate-400 light:text-slate-600'}`}>
+                            {program.startLabel}{program.stopLabel ? ` - ${program.stopLabel}` : ''}
+                          </div>
                         </div>
                       </div>
                       {program.description && <div className={`mt-1 line-clamp-2 text-xs ${program.isNow ? 'text-cyan-100/60 light:text-cyan-800/70' : 'text-slate-500'}`}>{program.description}</div>}

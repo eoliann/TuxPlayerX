@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Info, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { Subscription, SubscriptionType } from '../lib/types';
 import { api } from '../lib/api';
-import { formatConnections, maskMac } from '../lib/utils';
+import { cn, daysUntilExpiry, EXPIRY_WARNING_DAYS, formatConnections, maskMac } from '../lib/utils';
 
 interface Props {
   onChanged: () => void;
@@ -167,7 +167,7 @@ export function SubscriptionsView({ onChanged, onStatus }: Props) {
                 <span className="rounded-full border border-white/10 px-3 py-1 text-xs font-black uppercase light:border-slate-200">{sub.type}</span>
               </div>
               <div className="mb-4 grid grid-cols-3 gap-3 text-xs">
-                <div className="rounded-2xl bg-black/20 p-3 light:bg-white"><div className="text-slate-500">Expires</div><div className="font-bold">{sub.expiresAt || 'Unknown'}</div></div>
+                <div className="rounded-2xl bg-black/20 p-3 light:bg-white"><div className="text-slate-500">Expires</div><div className={cn('font-bold', expiryClass(sub.expiresAt))}>{sub.expiresAt || 'Unknown'}</div></div>
                 <div className="rounded-2xl bg-black/20 p-3 light:bg-white"><div className="text-slate-500">Connections</div><div className="font-bold">{formatConnections(sub.activeConnections, sub.maxConnections)}</div></div>
                 <div className="rounded-2xl bg-black/20 p-3 light:bg-white"><div className="text-slate-500">Source</div><div className="font-bold uppercase">{sub.type}</div></div>
               </div>
@@ -184,4 +184,12 @@ export function SubscriptionsView({ onChanged, onStatus }: Props) {
       </section>
     </div>
   );
+}
+
+function expiryClass(expiresAt?: string | null): string {
+  const days = daysUntilExpiry(expiresAt);
+  if (days === null) return '';
+  if (days < 0) return 'text-red-400 light:text-red-600';
+  if (days <= EXPIRY_WARNING_DAYS) return 'text-amber-300 light:text-amber-600';
+  return '';
 }

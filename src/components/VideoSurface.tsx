@@ -1,6 +1,7 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
 import Hls from 'hls.js';
-import { Play, RotateCw, TriangleAlert } from 'lucide-react';
+import { AudioLines, Captions, Check, Play, RotateCw, TriangleAlert } from 'lucide-react';
+import { cn } from '../lib/utils';
 
 // Live-TV oriented hls.js settings, shared by the initial load and the auto-restart path.
 const HLS_CONFIG: Partial<Hls['config']> = {
@@ -24,6 +25,58 @@ const HLS_CONFIG: Partial<Hls['config']> = {
   startFragPrefetch: true,
 };
 
+interface MediaTrack {
+  index: number;
+  label: string;
+  lang?: string;
+}
+
+interface PlaybackPrefs {
+  volume: number;
+  muted: boolean;
+  audioLang?: string;
+  /** Preferred subtitle language; null means subtitles were explicitly turned off. */
+  subtitleLang?: string | null;
+}
+
+const PREFS_KEY = 'tuxplayerx.playback';
+
+function loadPrefs(): PlaybackPrefs {
+  try {
+    const raw = window.localStorage.getItem(PREFS_KEY);
+    if (raw) return { volume: 1, muted: false, ...JSON.parse(raw) };
+  } catch {
+    // Storage may be unavailable; fall back to defaults.
+  }
+  return { volume: 1, muted: false };
+}
+
+function savePrefs(patch: Partial<PlaybackPrefs>) {
+  try {
+    window.localStorage.setItem(PREFS_KEY, JSON.stringify({ ...loadPrefs(), ...patch }));
+  } catch {
+    // Ignore storage failures; preferences are a convenience only.
+  }
+}
+
+type NativeAudioTrack = { label: string; language: string; enabled: boolean };
+type NativeAudioTrackList = { length: number; [index: number]: NativeAudioTrack } & EventTarget;
+
+function nativeAudioTracks(video: HTMLVideoElement): NativeAudioTrackList | undefined {
+  return (video as HTMLVideoElement & { audioTracks?: NativeAudioTrackList }).audioTracks;
+}
+
+function nativeSubtitleTracks(video: HTMLVideoElement): TextTrack[] {
+  return Array.from(video.textTracks).filter((track) => track.kind === 'subtitles' || track.kind === 'captions');
+}
+
+function trackLabel(name: string | undefined, lang: string | undefined, index: number): string {
+  const label = (name || '').trim();
+  const code = (lang || '').trim();
+  if (label && code && !label.toLowerCase().includes(code.toLowerCase())) return `${label} (${code})`;
+  return label || code.toUpperCase() || `Track ${index + 1}`;
+}
+
 interface VideoSurfaceProps {
   src: string;
   title?: string;
@@ -31,6 +84,10 @@ interface VideoSurfaceProps {
   muted?: boolean;
   compact?: boolean;
   autoRestart?: boolean;
+  /** Seconds to seek to once the media is loaded (used to resume movies). */
+  initialTime?: number;
+  /** Called about every 5 seconds during playback with the position and duration in seconds. */
+  onProgress?: (time: number, duration: number) => void;
   onStatus?: (status: string) => void;
 }
 
@@ -38,11 +95,15 @@ export interface VideoSurfaceHandle {
   requestPictureInPicture: () => Promise<void>;
   requestFullscreen: () => Promise<void>;
   toggleMute: () => boolean;
+  /** Switches to the next audio track and returns its label (undefined when there is only one). */
+  cycleAudioTrack: () => string | undefined;
+  /** Cycles subtitles (off → track 1 → ... → off) and returns the new label. */
+  cycleSubtitles: () => string | undefined;
   stop: () => void;
 }
 
 export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(function VideoSurface(
-  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, onStatus },
+  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus },
   ref,
 ) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -52,6 +113,100 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
   const [restartCount, setRestartCount] = useState(0);
   const [needsUserAction, setNeedsUserAction] = useState(false);
   const [playbackError, setPlaybackError] = useState('');
+  const [audioTracks, setAudioTracks] = useState<MediaTrack[]>([]);
+  const [audioIndex, setAudioIndex] = useState(-1);
+  const [subtitleTracks, setSubtitleTracks] = useState<MediaTrack[]>([]);
+  const [subtitleIndex, setSubtitleIndex] = useState(-1);
+  const [openMenu, setOpenMenu] = useState<'audio' | 'subtitles' | null>(null);
+
+  /** Reads the available audio/subtitle tracks from hls.js or from the native media element. */
+  const syncTracks = () => {
+    const video = videoRef.current;
+    const hls = hlsRef.current;
+    if (hls) {
+      setAudioTracks(hls.audioTracks.map((track, index) => ({ index, label: trackLabel(track.name, track.lang, index), lang: track.lang })));
+      setAudioIndex(hls.audioTrack);
+      setSubtitleTracks(hls.subtitleTracks.map((track, index) => ({ index, label: trackLabel(track.name, track.lang, index), lang: track.lang })));
+      setSubtitleIndex(hls.subtitleDisplay ? hls.subtitleTrack : -1);
+      return;
+    }
+    if (!video) return;
+    const audio = nativeAudioTracks(video);
+    const audioList: MediaTrack[] = [];
+    let enabledAudio = -1;
+    for (let index = 0; audio && index < audio.length; index += 1) {
+      audioList.push({ index, label: trackLabel(audio[index].label, audio[index].language, index), lang: audio[index].language });
+      if (audio[index].enabled) enabledAudio = index;
+    }
+    setAudioTracks(audioList);
+    setAudioIndex(enabledAudio);
+    const subtitles = nativeSubtitleTracks(video);
+    setSubtitleTracks(subtitles.map((track, index) => ({ index, label: trackLabel(track.label, track.language, index), lang: track.language })));
+    setSubtitleIndex(subtitles.findIndex((track) => track.mode === 'showing'));
+  };
+
+  const selectAudioTrack = (index: number, remember = true) => {
+    const video = videoRef.current;
+    const hls = hlsRef.current;
+    if (hls) {
+      hls.audioTrack = index;
+    } else if (video) {
+      const audio = nativeAudioTracks(video);
+      for (let i = 0; audio && i < audio.length; i += 1) audio[i].enabled = i === index;
+    }
+    const lang = audioTracks[index]?.lang;
+    if (remember && lang) savePrefs({ audioLang: lang });
+    setAudioIndex(index);
+    setOpenMenu(null);
+  };
+
+  const selectSubtitleTrack = (index: number, remember = true) => {
+    const video = videoRef.current;
+    const hls = hlsRef.current;
+    if (hls) {
+      hls.subtitleTrack = index;
+      hls.subtitleDisplay = index >= 0;
+    } else if (video) {
+      nativeSubtitleTracks(video).forEach((track, i) => {
+        track.mode = i === index ? 'showing' : 'disabled';
+      });
+    }
+    if (remember) savePrefs({ subtitleLang: index >= 0 ? subtitleTracks[index]?.lang || null : null });
+    setSubtitleIndex(index);
+    setOpenMenu(null);
+  };
+
+  // Apply the remembered audio/subtitle language when a stream exposes matching tracks.
+  const appliedPrefsForRef = useRef('');
+  useEffect(() => {
+    const key = `${src}|${audioTracks.length}|${subtitleTracks.length}`;
+    if (!src || appliedPrefsForRef.current === key) return;
+    appliedPrefsForRef.current = key;
+    const prefs = loadPrefs();
+    if (prefs.audioLang && audioTracks.length > 1) {
+      const wanted = audioTracks.find((track) => track.lang?.toLowerCase() === prefs.audioLang?.toLowerCase());
+      if (wanted && wanted.index !== audioIndex) selectAudioTrack(wanted.index, false);
+    }
+    if (prefs.subtitleLang && subtitleTracks.length > 0 && subtitleIndex < 0) {
+      const wanted = subtitleTracks.find((track) => track.lang?.toLowerCase() === prefs.subtitleLang?.toLowerCase());
+      if (wanted) selectSubtitleTrack(wanted.index, false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src, audioTracks, subtitleTracks]);
+
+  /** Wires track events for a newly created hls.js instance. */
+  const watchHlsTracks = (hls: Hls) => {
+    hls.subtitleDisplay = false;
+    for (const event of [
+      Hls.Events.MANIFEST_PARSED,
+      Hls.Events.AUDIO_TRACKS_UPDATED,
+      Hls.Events.AUDIO_TRACK_SWITCHED,
+      Hls.Events.SUBTITLE_TRACKS_UPDATED,
+      Hls.Events.SUBTITLE_TRACK_SWITCH,
+    ]) {
+      hls.on(event, syncTracks);
+    }
+  };
 
   const destroyHls = () => {
     hlsRef.current?.destroy();
@@ -84,9 +239,19 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       setNeedsUserAction(false);
       onStatus?.('Playback started.');
     } catch (error) {
-      setNeedsUserAction(true);
+      const name = error instanceof DOMException ? error.name : '';
       const message = error instanceof Error ? error.message : String(error);
-      onStatus?.(`Playback requires user interaction. ${message || ''}`.trim());
+      if (name === 'AbortError') return; // A newer load replaced this one.
+      if (name === 'NotAllowedError') {
+        // Autoplay was blocked; a click inside the player starts it.
+        setNeedsUserAction(true);
+        onStatus?.('Click inside the player to start playback.');
+        return;
+      }
+      // NotSupportedError: the format is not supported or the server sent no playable media.
+      setNeedsUserAction(false);
+      setPlaybackError('This stream could not be played by the built-in player (unsupported format or the server sent no video). Try Open in VLC.');
+      onStatus?.(`Playback failed: ${message || name || 'unsupported stream'}`);
     }
   };
 
@@ -154,8 +319,71 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       video.muted = !video.muted;
       return video.muted;
     },
+    cycleAudioTrack: () => {
+      if (audioTracks.length < 2) return undefined;
+      const next = (audioIndex + 1) % audioTracks.length;
+      selectAudioTrack(next);
+      return audioTracks[next].label;
+    },
+    cycleSubtitles: () => {
+      if (subtitleTracks.length === 0) return undefined;
+      const next = subtitleIndex + 1 >= subtitleTracks.length ? -1 : subtitleIndex + 1;
+      selectSubtitleTrack(next);
+      return next < 0 ? 'Off' : subtitleTracks[next].label;
+    },
     stop: stopPlayback,
   }));
+
+  // Resume position and progress reporting (movies and episodes).
+  const onProgressRef = useRef(onProgress);
+  onProgressRef.current = onProgress;
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !src) return;
+    let lastReport = 0;
+    const onLoaded = () => {
+      if (initialTime && initialTime > 0 && Number.isFinite(video.duration) && initialTime < video.duration - 5) {
+        video.currentTime = initialTime;
+      }
+    };
+    const onTimeUpdate = () => {
+      const now = Date.now();
+      if (now - lastReport < 5000 || !Number.isFinite(video.duration)) return;
+      lastReport = now;
+      onProgressRef.current?.(video.currentTime, video.duration);
+    };
+    video.addEventListener('loadedmetadata', onLoaded);
+    video.addEventListener('timeupdate', onTimeUpdate);
+    return () => {
+      video.removeEventListener('loadedmetadata', onLoaded);
+      video.removeEventListener('timeupdate', onTimeUpdate);
+      if (Number.isFinite(video.duration) && video.currentTime > 0) onProgressRef.current?.(video.currentTime, video.duration);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src]);
+
+  // Remember volume and mute between sessions, and keep native track lists in sync.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onVolumeChange = () => savePrefs({ volume: video.volume, muted: video.muted });
+    const audio = nativeAudioTracks(video);
+    video.addEventListener('volumechange', onVolumeChange);
+    video.addEventListener('loadedmetadata', syncTracks);
+    video.textTracks.addEventListener('addtrack', syncTracks);
+    video.textTracks.addEventListener('change', syncTracks);
+    audio?.addEventListener('addtrack', syncTracks);
+    audio?.addEventListener('change', syncTracks);
+    return () => {
+      video.removeEventListener('volumechange', onVolumeChange);
+      video.removeEventListener('loadedmetadata', syncTracks);
+      video.textTracks.removeEventListener('addtrack', syncTracks);
+      video.textTracks.removeEventListener('change', syncTracks);
+      audio?.removeEventListener('addtrack', syncTracks);
+      audio?.removeEventListener('change', syncTracks);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src ? 'video' : 'empty']);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -165,6 +393,11 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
     setRestartCount(0);
     setNeedsUserAction(false);
     setPlaybackError('');
+    setAudioTracks([]);
+    setAudioIndex(-1);
+    setSubtitleTracks([]);
+    setSubtitleIndex(-1);
+    setOpenMenu(null);
 
     video.pause();
     video.removeAttribute('src');
@@ -172,12 +405,17 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
 
     if (!src) return;
 
+    const prefs = loadPrefs();
+    video.volume = Math.min(1, Math.max(0, prefs.volume));
+    video.muted = prefs.muted;
+
     const lower = src.toLowerCase();
     const isHls = lower.includes('.m3u8') || lower.includes('m3u8');
 
     if (isHls && Hls.isSupported()) {
       const hls = new Hls(HLS_CONFIG);
       hlsRef.current = hls;
+      watchHlsTracks(hls);
       hls.loadSource(src);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -237,6 +475,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
         if (current.toLowerCase().includes('.m3u8') && Hls.isSupported()) {
           const hls = new Hls(HLS_CONFIG);
           hlsRef.current = hls;
+          watchHlsTracks(hls);
           hls.loadSource(current);
           hls.attachMedia(video);
         } else {
@@ -356,9 +595,75 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
         </div>
       )}
 
+      {src && !compact && (audioTracks.length > 1 || subtitleTracks.length > 0) && (
+        <div className="absolute right-4 top-4 z-10 flex gap-2">
+          {audioTracks.length > 1 && (
+            <TrackMenu
+              icon={<AudioLines size={15} />}
+              label="Audio"
+              open={openMenu === 'audio'}
+              onToggle={() => setOpenMenu(openMenu === 'audio' ? null : 'audio')}
+              items={audioTracks}
+              current={audioIndex}
+              onPick={selectAudioTrack}
+            />
+          )}
+          {subtitleTracks.length > 0 && (
+            <TrackMenu
+              icon={<Captions size={15} />}
+              label="Subtitles"
+              open={openMenu === 'subtitles'}
+              onToggle={() => setOpenMenu(openMenu === 'subtitles' ? null : 'subtitles')}
+              items={[{ index: -1, label: 'Off' }, ...subtitleTracks]}
+              current={subtitleIndex}
+              onPick={selectSubtitleTrack}
+            />
+          )}
+        </div>
+      )}
+
       {title && !compact && (
         <div className="pointer-events-none absolute left-4 top-4 max-w-[70%] truncate rounded-full bg-black/55 px-4 py-2 text-xs font-bold text-white backdrop-blur">{title}</div>
       )}
     </div>
   );
 });
+
+interface TrackMenuProps {
+  icon: ReactNode;
+  label: string;
+  open: boolean;
+  items: MediaTrack[];
+  current: number;
+  onToggle: () => void;
+  onPick: (index: number) => void;
+}
+
+function TrackMenu({ icon, label, open, items, current, onToggle, onPick }: TrackMenuProps) {
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex items-center gap-1.5 rounded-full bg-black/60 px-3 py-1.5 text-xs font-bold text-white backdrop-blur hover:bg-black/80"
+      >
+        {icon} {label}
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 max-h-64 min-w-44 overflow-auto rounded-2xl border border-white/10 bg-slate-950/95 p-1 text-sm text-white shadow-2xl backdrop-blur">
+          {items.map((item) => (
+            <button
+              key={item.index}
+              type="button"
+              onClick={() => onPick(item.index)}
+              className={cn('flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-white/10', item.index === current && 'text-cyan-300')}
+            >
+              <Check size={14} className={item.index === current ? 'opacity-100' : 'opacity-0'} />
+              <span className="truncate">{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

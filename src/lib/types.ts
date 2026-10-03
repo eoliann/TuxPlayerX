@@ -25,6 +25,10 @@ export interface Channel {
   group?: string | null;
   rawCmd?: string | null;
   epgId?: string | null;
+  /** Days of TV archive available for catch-up. */
+  catchupDays?: number | null;
+  catchupType?: string | null;
+  catchupSource?: string | null;
 }
 
 export interface ChannelLoadResult {
@@ -85,4 +89,87 @@ export interface AppInfo {
   repository: string;
   license: string;
   downloadUrl: string;
+}
+
+export interface ImportSummary {
+  addedSubscriptions: number;
+  existingSubscriptions: number;
+  favorites: number;
+  settings: AppSettings;
+}
+
+export interface EpgGridItem {
+  title: string;
+  description?: string | null;
+  /** Unix timestamps in seconds. */
+  start: number;
+  stop: number;
+}
+
+export type VodKind = 'movie' | 'series';
+
+export interface VodCategory {
+  id: string;
+  name: string;
+}
+
+export interface VodItem {
+  id: string;
+  name: string;
+  kind: VodKind;
+  poster?: string | null;
+  rating?: string | null;
+  year?: string | null;
+  plot?: string | null;
+  extension?: string | null;
+  cmd?: string | null;
+  episodes?: number[] | null;
+}
+
+export interface VodPage {
+  items: VodItem[];
+  hasMore: boolean;
+}
+
+export interface VodDetails {
+  plot?: string | null;
+  genre?: string | null;
+  cast?: string | null;
+  director?: string | null;
+  releaseDate?: string | null;
+  duration?: string | null;
+  rating?: string | null;
+  backdrop?: string | null;
+}
+
+export interface SeriesEpisode {
+  id: string;
+  number: number;
+  title: string;
+  extension?: string | null;
+  plot?: string | null;
+  duration?: string | null;
+  poster?: string | null;
+  cmd?: string | null;
+}
+
+export interface SeriesSeason {
+  number: number;
+  name: string;
+  episodes: SeriesEpisode[];
+}
+
+export interface SeriesInfo {
+  name: string;
+  poster?: string | null;
+  plot?: string | null;
+  seasons: SeriesSeason[];
+}
+
+export interface VodPlayRequest {
+  kind: 'movie' | 'episode';
+  id: string;
+  extension?: string | null;
+  cmd?: string | null;
+  episodeNumber?: number | null;
 }
