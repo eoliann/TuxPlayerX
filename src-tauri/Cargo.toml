@@ -1,6 +1,6 @@
 [package]
 name = "tuxplayerx"
-version = "2.0.7"
+version = "2.0.8"
 description = "TuxPlayerX desktop streaming player"
 authors = ["eoliann"]
 edition = "2021"
