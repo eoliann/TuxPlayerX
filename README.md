@@ -167,7 +167,7 @@ npm run tauri:build
 2. Click **Add subscription**.
 3. Select **M3U**.
 4. Enter a display name.
-5. Enter the M3U URL or local file path.
+5. Enter the M3U URL, or click **Browse...** to choose a local `.m3u` / `.m3u8` file (the name is filled in from the file name if empty). Local files are read again each time channels are reloaded, so edits to the file are picked up; UTF-8 and older Latin-1 playlists are both supported.
 6. Optional: add username and password if your provider requires them.
 7. Enable **Use as default** if needed.
 8. Save the subscription.

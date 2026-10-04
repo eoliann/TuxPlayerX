@@ -642,6 +642,7 @@ fn open_pip_window(app: tauri::AppHandle, url: String, title: String) -> Result<
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data = app.path().app_data_dir().map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             let db_path = app_data.join("tuxplayerx.sqlite3");
