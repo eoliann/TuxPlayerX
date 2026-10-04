@@ -71,15 +71,22 @@ function handleKey(event: KeyboardEvent) {
   }
 
   const from = active.getBoundingClientRect();
-  let best: HTMLElement | null = null;
-  let bestScore = Infinity;
-  for (const candidate of candidates) {
-    const value = score(from, candidate.getBoundingClientRect(), direction);
-    if (value !== null && value < bestScore) {
-      bestScore = value;
-      best = candidate;
+  const pick = (pool: HTMLElement[]) => {
+    let best: HTMLElement | null = null;
+    let bestScore = Infinity;
+    for (const candidate of pool) {
+      const value = score(from, candidate.getBoundingClientRect(), direction);
+      if (value !== null && value < bestScore) {
+        bestScore = value;
+        best = candidate;
+      }
     }
-  }
+    return best;
+  };
+  // Inside a scrolling list ([data-nav-group]) keep moving through the list while it has items that way,
+  // even when the next item is still below the visible area.
+  const group = active.closest<HTMLElement>('[data-nav-group]');
+  const best = (group && pick(candidates.filter((candidate) => group.contains(candidate)))) || pick(candidates);
   if (best) {
     best.focus({ preventScroll: true });
     best.scrollIntoView({ block: 'nearest', inline: 'nearest' });

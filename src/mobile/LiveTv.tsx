@@ -8,8 +8,10 @@ import { MobilePlayer } from './MobilePlayer';
 const ALL = '__all__';
 const FAVORITES = '__favorites__';
 const RECENT = '__recent__';
-/** "Now playing" guide data is fetched only for the first rows of the visible list. */
-const EPG_NOW_LIMIT = 150;
+/** Every channel row has the same height, so only the rows on screen need to exist in the page. */
+const ROW_HEIGHT = 64;
+/** Rows rendered above and below the screen, so scrolling and remote navigation stay smooth. */
+const OVERSCAN = 10;
 const LAST_SUBSCRIPTION_KEY = 'tuxplayerx.mobile.subscription';
 
 interface Props {
@@ -48,6 +50,8 @@ export function LiveTv({ settings, reloadToken, onStatus, onOpenSubscriptions }:
   const [epgNow, setEpgNow] = useState<Record<string, EpgNow>>({});
   const [playing, setPlaying] = useState<Channel | null>(null);
   const loadSeq = useRef(0);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [range, setRange] = useState({ start: 0, end: 30 });
 
   useEffect(() => {
     api.listSubscriptions()
@@ -110,23 +114,52 @@ export function LiveTv({ settings, reloadToken, onStatus, onOpenSubscriptions }:
     return query ? list.filter((channel) => channel.name.toLowerCase().includes(query)) : list;
   }, [channels, filter, favorites, recents, deferredSearch]);
 
-  // "Now playing" for the first rows of the current list, refreshed every minute.
+  /** Works out which rows are on screen (plus a margin) from the scroll position. */
+  const updateRange = () => {
+    const list = listRef.current;
+    if (!list) return;
+    const start = Math.max(0, Math.floor(list.scrollTop / ROW_HEIGHT) - OVERSCAN);
+    const end = Math.min(visible.length, Math.ceil((list.scrollTop + list.clientHeight) / ROW_HEIGHT) + OVERSCAN);
+    setRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+  };
+
+  // Back to the top when another list is shown (not when a favorite is toggled).
   useEffect(() => {
-    if (!settings.epgUrl?.trim() || visible.length === 0) return;
-    const keys = visible.slice(0, EPG_NOW_LIMIT).map((channel) => ({ id: channel.id, name: channel.name, epgId: channel.epgId }));
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [channels, filter, deferredSearch]);
+  // Recompute the rows on screen when the list changes, is shown again or is resized.
+  useEffect(() => {
+    updateRange();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const observer = new ResizeObserver(() => updateRange());
+    observer.observe(list);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, subscriptions.length]);
+
+  const onScreen = useMemo(() => visible.slice(range.start, range.end), [visible, range]);
+
+  // "Now playing" for the rows on screen, refreshed every minute.
+  useEffect(() => {
+    if (!settings.epgUrl?.trim() || onScreen.length === 0) return;
+    const keys = onScreen.map((channel) => ({ id: channel.id, name: channel.name, epgId: channel.epgId }));
     let cancelled = false;
     const refresh = () =>
       api.loadEpgNow(keys)
         .then((now) => !cancelled && setEpgNow((prev) => ({ ...prev, ...now })))
         .catch(() => undefined);
-    const timer = window.setTimeout(refresh, 300);
+    const timer = window.setTimeout(refresh, 400);
     const interval = window.setInterval(refresh, 60_000);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
       window.clearInterval(interval);
     };
-  }, [visible, settings.epgUrl]);
+  }, [onScreen, settings.epgUrl]);
 
   const toggleFavorite = async (channel: Channel) => {
     if (subscriptionId == null) return;
@@ -194,16 +227,16 @@ export function LiveTv({ settings, reloadToken, onStatus, onOpenSubscriptions }:
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <div ref={listRef} onScroll={updateRange} data-nav-group className="min-h-0 flex-1 overflow-y-auto px-2">
         {visible.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-400">{loading ? 'Loading channels...' : 'No channels here.'}</div>
         ) : (
-          <ul className="grid gap-1 lg:grid-cols-2">
-            {visible.map((channel) => {
+          <ul className="relative" style={{ height: visible.length * ROW_HEIGHT }}>
+            {onScreen.map((channel, index) => {
               const now = epgNow[channel.id];
               return (
-                <li key={channel.id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 64px' }}>
-                  <div className="flex items-center gap-1 rounded-2xl hover:bg-white/5 light:hover:bg-slate-200/60">
+                <li key={channel.id} className="absolute inset-x-0" style={{ top: (range.start + index) * ROW_HEIGHT, height: ROW_HEIGHT }}>
+                  <div className="flex h-full items-center gap-1 rounded-2xl hover:bg-white/5 light:hover:bg-slate-200/60">
                     <button type="button" onClick={() => setPlaying(channel)} className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl p-2 text-left">
                       <ChannelLogo src={channel.logo} name={channel.name} />
                       <span className="min-w-0 flex-1">

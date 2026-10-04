@@ -289,7 +289,9 @@ async fn prepare_direct_stream(url: String, user_agent: Option<String>, referrer
     media_proxy::prepare(&url, &headers).await.map_err(err)
 }
 
-#[tauri::command]
+// Commands that touch the database, files or processes run on the async thread pool (`async`), not on the
+// main thread: on Android the main thread also draws the interface, which would freeze while they wait.
+#[tauri::command(async)]
 fn stop_vlc_bridge(state: State<AppState>) -> Result<(), String> {
     stop_vlc_bridge_internal(&state)
 }
@@ -424,12 +426,12 @@ async fn start_vlc_bridge(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_subscriptions(state: State<AppState>) -> Result<Vec<Subscription>, String> {
     state.db.lock().map_err(err)?.list_subscriptions().map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_subscription(state: State<AppState>, subscription: Subscription) -> Result<i64, String> {
     let db = state.db.lock().map_err(err)?;
     let id = db.save_subscription(&subscription).map_err(err)?;
@@ -438,17 +440,17 @@ fn save_subscription(state: State<AppState>, subscription: Subscription) -> Resu
     Ok(id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_subscription(state: State<AppState>, id: i64) -> Result<(), String> {
     state.db.lock().map_err(err)?.delete_subscription(id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_default_subscription(state: State<AppState>, id: i64) -> Result<(), String> {
     state.db.lock().map_err(err)?.set_default_subscription(id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_default_subscription(state: State<AppState>) -> Result<Option<Subscription>, String> {
     state.db.lock().map_err(err)?.get_default_subscription().map_err(err)
 }
@@ -470,7 +472,7 @@ async fn load_channels(state: State<'_, AppState>, id: i64, force: Option<bool>)
 
 /// Copies a playlist chosen on the device into the app data folder and returns its local path.
 /// Android file pickers hand out content:// URIs that cannot be read again later, so the file is kept here.
-#[tauri::command]
+#[tauri::command(async)]
 fn import_playlist_file(app: tauri::AppHandle, name: String, content: String) -> Result<String, String> {
     let dir = app.path().app_data_dir().map_err(err)?.join("playlists");
     fs::create_dir_all(&dir).map_err(err)?;
@@ -485,7 +487,7 @@ fn import_playlist_file(app: tauri::AppHandle, name: String, content: String) ->
 }
 
 /// Writes a backup JSON file to the Downloads folder (or home as a fallback) and returns its path.
-#[tauri::command]
+#[tauri::command(async)]
 fn export_backup(state: State<AppState>) -> Result<String, String> {
     let backup = state.db.lock().map_err(err)?.export_backup().map_err(err)?;
     let folder = dirs_next::download_dir()
@@ -497,28 +499,28 @@ fn export_backup(state: State<AppState>) -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn import_backup(state: State<AppState>, content: String) -> Result<ImportSummary, String> {
     let backup: BackupFile = serde_json::from_str(&content).map_err(|e| format!("Invalid backup file: {e}"))?;
     state.db.lock().map_err(err)?.import_backup(&backup).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_favorites(state: State<AppState>, subscription_id: i64) -> Result<Vec<String>, String> {
     state.db.lock().map_err(err)?.list_favorites(subscription_id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn toggle_favorite(state: State<AppState>, subscription_id: i64, channel_id: String) -> Result<bool, String> {
     state.db.lock().map_err(err)?.toggle_favorite(subscription_id, &channel_id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_recents(state: State<AppState>, subscription_id: i64) -> Result<Vec<String>, String> {
     state.db.lock().map_err(err)?.list_recents(subscription_id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn record_recent(state: State<AppState>, subscription_id: i64, channel_id: String) -> Result<(), String> {
     state.db.lock().map_err(err)?.record_recent(subscription_id, &channel_id).map_err(err)
 }
@@ -600,12 +602,12 @@ async fn load_epg_now(state: State<'_, AppState>, channels: Vec<EpgChannelKey>) 
     providers::load_epg_now(&settings.epg_url, &channels, &settings.epg_timezone_mode, settings.epg_time_offset_minutes).await.map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_settings(state: State<AppState>) -> Result<AppSettings, String> {
     state.db.lock().map_err(err)?.get_settings().map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_settings(state: State<AppState>, settings: AppSettings) -> Result<(), String> {
     state.db.lock().map_err(err)?.save_settings(&settings).map_err(err)
 }
@@ -615,7 +617,7 @@ fn open_url(url: String) -> Result<(), String> {
     open::that(url).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stop_external_player(state: State<AppState>) -> Result<(), String> {
     stop_external_player_internal(&state)
 }
@@ -629,13 +631,13 @@ fn shutdown_playback(state: State<AppState>, app: tauri::AppHandle) -> Result<()
     cleanup_playback_internal(&state)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_external_player(state: State<AppState>, url: String, user_agent: Option<String>, referrer: Option<String>) -> Result<(), String> {
     stop_vlc_bridge_internal(&state)?;
     open_player_process(state, url, false, user_agent, referrer)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_detached_external_player(state: State<AppState>, url: String, user_agent: Option<String>, referrer: Option<String>) -> Result<(), String> {
     stop_vlc_bridge_internal(&state)?;
     open_player_process(state, url, true, user_agent, referrer)
