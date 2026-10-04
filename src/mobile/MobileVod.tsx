@@ -5,6 +5,7 @@ import { api } from '../core/api';
 import { cn } from '../core/utils';
 import { formatClock, loadProgress, progressKey } from '../core/vodProgress';
 import { useBackHandler } from './useBackHandler';
+import { safePadding } from './safeArea';
 import { MobileVodPlayer, type VodPlayback } from './MobileVodPlayer';
 
 interface Props {
@@ -306,7 +307,7 @@ function VodDetailsSheet({ subscriptionId, item, playbackKey, onClose, onPlay }:
     });
 
   return (
-    <div data-nav-scope className="fixed inset-0 z-40 overflow-y-auto bg-slate-950 p-4 light:bg-slate-100">
+    <div data-nav-scope className="fixed inset-0 z-40 overflow-y-auto bg-slate-950 light:bg-slate-100" style={safePadding('1rem')}>
       <button type="button" onClick={onClose} className="mb-3 flex items-center gap-2 text-sm font-bold text-slate-400">
         <ArrowLeft size={18} /> Back
       </button>

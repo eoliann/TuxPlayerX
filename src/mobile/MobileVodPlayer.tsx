@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pause, Play, Rewind, FastForward, X } from 'lucide-react';
+import { Expand, FastForward, Pause, Play, Rewind, Shrink, X } from 'lucide-react';
 import type { StreamFormat } from '../core/stream';
 import { cn } from '../core/utils';
 import { formatClock, loadProgress, saveProgress } from '../core/vodProgress';
 import { VideoSurface, VideoSurfaceHandle } from '../core/components/VideoSurface';
 import { useBackHandler } from './useBackHandler';
+import { safePadding } from './safeArea';
+import { useVideoFit } from './useVideoFit';
 
 export interface VodPlayback {
   title: string;
@@ -37,6 +39,7 @@ export function MobileVodPlayer({ playback, onClose, onStatus }: Props) {
   const [initialTime] = useState(() => loadProgress()[playback.key]?.time);
 
   useBackHandler(true, onClose);
+  const [fit, toggleFit] = useVideoFit();
 
   const showBar = () => {
     setBarVisible(true);
@@ -111,6 +114,7 @@ export function MobileVodPlayer({ playback, onClose, onStatus }: Props) {
         format={playback.format}
         compact
         allowFullscreen={false}
+        fit={fit}
         autoRestart={false}
         initialTime={initialTime}
         onProgress={(time, duration) => {
@@ -125,15 +129,19 @@ export function MobileVodPlayer({ playback, onClose, onStatus }: Props) {
       />
       <div
         className={cn(
-          'pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/85 to-transparent p-4 pb-12 transition-opacity duration-300',
+          'pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/85 to-transparent transition-opacity duration-300',
           barVisible ? 'opacity-100' : 'opacity-0',
         )}
+        style={{ ...safePadding('1rem'), paddingBottom: '3rem' }}
       >
         <div className={cn('flex items-center gap-3', barVisible && 'pointer-events-auto')}>
           <button type="button" onClick={onClose} className="rounded-full bg-white/10 p-2" aria-label="Close player">
             <X size={20} />
           </button>
           <div className="min-w-0 flex-1 truncate text-base font-black">{playback.title}</div>
+          <button type="button" onClick={toggleFit} className="rounded-full bg-white/10 p-2" aria-label={fit === 'cover' ? 'Fit the whole picture' : 'Fill the screen'}>
+            {fit === 'cover' ? <Shrink size={20} /> : <Expand size={20} />}
+          </button>
         </div>
         {position && (
           <div className="mt-3 flex items-center gap-3 text-xs text-slate-300">

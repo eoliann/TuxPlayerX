@@ -123,6 +123,8 @@ interface VideoSurfaceProps {
    * its WebView has no element fullscreen, and rotating the device already fills the screen.
    */
   allowFullscreen?: boolean;
+  /** 'cover' fills the frame (cropping the edges) instead of letterboxing. */
+  fit?: 'contain' | 'cover';
 }
 
 export interface VideoSurfaceHandle {
@@ -141,7 +143,7 @@ export interface VideoSurfaceHandle {
 }
 
 export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(function VideoSurface(
-  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus, onUnsupported, onFailed, format, className, allowFullscreen = true },
+  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus, onUnsupported, onFailed, format, className, allowFullscreen = true, fit = 'contain' },
   ref,
 ) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -727,7 +729,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       {src ? (
         <video
           ref={videoRef}
-          className="h-full w-full bg-black object-contain"
+          className={cn('h-full w-full bg-black', fit === 'cover' ? 'object-cover' : 'object-contain')}
           controls
           controlsList={allowFullscreen ? undefined : 'nofullscreen noremoteplayback'}
           autoPlay={autoPlay}

@@ -1,9 +1,10 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { LayoutGrid, List, RefreshCw, Search, Star, Tv } from 'lucide-react';
+import { CalendarDays, LayoutGrid, List, RefreshCw, Search, Star, Tv } from 'lucide-react';
 import { AppSettings, Channel, EpgNow, Subscription } from '../core/types';
 import { api } from '../core/api';
 import { cn } from '../core/utils';
-import { MobilePlayer } from './MobilePlayer';
+import { ArchiveProgramme, MobilePlayer } from './MobilePlayer';
+import { MobileGuide } from './MobileGuide';
 
 const ALL = '__all__';
 const FAVORITES = '__favorites__';
@@ -59,6 +60,8 @@ export function LiveTv({ settings, reloadToken, onStatus, onOpenSubscriptions }:
   const [recents, setRecents] = useState<string[]>([]);
   const [epgNow, setEpgNow] = useState<Record<string, EpgNow>>({});
   const [playing, setPlaying] = useState<Channel | null>(null);
+  const [archive, setArchive] = useState<ArchiveProgramme | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const loadSeq = useRef(0);
   const listRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -242,6 +245,14 @@ export function LiveTv({ settings, reloadToken, onStatus, onOpenSubscriptions }:
           </div>
           <button
             type="button"
+            onClick={() => (settings.epgUrl?.trim() ? setGuideOpen(true) : onStatus('Add a TV guide (XMLTV) source in Settings to use the guide.'))}
+            className="btn-secondary shrink-0 px-3"
+            aria-label="TV guide"
+          >
+            <CalendarDays size={18} />
+          </button>
+          <button
+            type="button"
             onClick={() => changeLayout(layout === 'list' ? 'grid' : 'list')}
             className="btn-secondary shrink-0 px-3"
             aria-label={layout === 'list' ? 'Show channels as a grid' : 'Show channels as a list'}
@@ -311,17 +322,41 @@ export function LiveTv({ settings, reloadToken, onStatus, onOpenSubscriptions }:
         )}
       </div>
 
+      {guideOpen && (
+        <MobileGuide
+          channels={visible}
+          currentChannelId={playing?.id}
+          onPlay={(channel) => {
+            setArchive(null);
+            setPlaying(channel);
+          }}
+          onReplay={(channel, item) => {
+            setArchive({ title: item.title, start: item.start, stop: item.stop });
+            setPlaying(channel);
+          }}
+          onClose={() => setGuideOpen(false)}
+        />
+      )}
+
       {playing && subscriptionId != null && (
         <MobilePlayer
           subscriptionId={subscriptionId}
           channel={playing}
+          archive={archive}
+          onArchiveChange={setArchive}
           channels={visible}
           settings={settings}
           isFavorite={favoriteSet.has(playing.id)}
           onToggleFavorite={() => toggleFavorite(playing)}
-          onChannelChange={setPlaying}
+          onChannelChange={(channel) => {
+            setArchive(null);
+            setPlaying(channel);
+          }}
           onPlayed={onPlayed}
-          onClose={() => setPlaying(null)}
+          onClose={() => {
+            setPlaying(null);
+            setArchive(null);
+          }}
           onStatus={onStatus}
         />
       )}

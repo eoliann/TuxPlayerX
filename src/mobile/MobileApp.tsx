@@ -4,6 +4,7 @@ import { AppSettings } from '../core/types';
 import { api } from '../core/api';
 import { cn } from '../core/utils';
 import { enableSpatialNavigation } from './spatialNav';
+import { enableSafeArea, safePadding } from './safeArea';
 import { LiveTv } from './LiveTv';
 import { MobileSubscriptions } from './MobileSubscriptions';
 import { MobileSettings } from './MobileSettings';
@@ -62,6 +63,7 @@ export default function MobileApp() {
   const [status, setStatus] = useState('');
 
   useEffect(() => enableSpatialNavigation(), []);
+  useEffect(() => enableSafeArea(), []);
 
   useEffect(() => {
     api.getSettings()
@@ -101,7 +103,7 @@ export default function MobileApp() {
   );
 
   return (
-    <div data-mobile className="flex h-[100dvh] bg-slate-950 text-slate-100 light:bg-slate-100 light:text-slate-950">
+    <div data-mobile className="flex h-[100dvh] bg-slate-950 text-slate-100 light:bg-slate-100 light:text-slate-950" style={safePadding()}>
       <nav className="hidden w-24 shrink-0 flex-col gap-2 border-r border-white/10 p-2 pt-6 md:flex light:border-slate-200">{nav}</nav>
       <div className="flex min-w-0 flex-1 flex-col">
         <main className="min-h-0 flex-1 overflow-y-auto">
