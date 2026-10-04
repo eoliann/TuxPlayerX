@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Star, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Expand, Shrink, Star, X } from 'lucide-react';
 import { AppSettings, Channel, EpgProgram } from '../core/types';
 import { api } from '../core/api';
 import type { StreamFormat } from '../core/stream';
 import { cn } from '../core/utils';
 import { VideoSurface, VideoSurfaceHandle } from '../core/components/VideoSurface';
 import { useBackHandler } from './useBackHandler';
+import { safePadding } from './safeArea';
+import { useVideoFit } from './useVideoFit';
 
 interface Props {
   subscriptionId: number;
@@ -52,6 +54,7 @@ export function MobilePlayer({
   const hideTimer = useRef<number | undefined>(undefined);
 
   useBackHandler(true, onClose);
+  const [fit, toggleFit] = useVideoFit();
 
   const showInfo = () => {
     setInfoVisible(true);
@@ -181,6 +184,9 @@ export function MobilePlayer({
       >
         <Star size={20} fill={isFavorite ? 'currentColor' : 'none'} />
       </button>
+      <button type="button" onClick={toggleFit} className="btn-secondary hidden px-3 landscape:inline-flex" aria-label={fit === 'cover' ? 'Fit the whole picture' : 'Fill the screen'}>
+        {fit === 'cover' ? <Shrink size={20} /> : <Expand size={20} />}
+      </button>
       <button type="button" onClick={onClose} className="btn-secondary px-3" aria-label="Close player">
         <X size={20} />
       </button>
@@ -216,6 +222,7 @@ export function MobilePlayer({
           format={format}
           compact
           allowFullscreen={false}
+          fit={fit}
           autoRestart={settings.autoRestart}
           onStatus={(message) => {
             if (!message.startsWith('Playback started')) onStatus(message);
@@ -253,9 +260,10 @@ export function MobilePlayer({
       {/* Landscape / TV: info bar over the video. */}
       <div
         className={cn(
-          'pointer-events-none absolute inset-x-0 bottom-0 hidden bg-gradient-to-t from-black/90 via-black/60 to-transparent p-6 pt-16 transition-opacity duration-300 landscape:block',
+          'pointer-events-none absolute inset-x-0 bottom-0 hidden bg-gradient-to-t from-black/90 via-black/60 to-transparent transition-opacity duration-300 landscape:block',
           infoVisible ? 'opacity-100' : 'opacity-0',
         )}
+        style={{ ...safePadding('1.5rem'), paddingTop: '4rem' }}
       >
         <div className={cn('flex items-end justify-between gap-4', infoVisible && 'pointer-events-auto')}>
           {details}
