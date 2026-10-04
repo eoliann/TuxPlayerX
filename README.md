@@ -102,7 +102,13 @@ This Tauri version uses the system WebView video engine plus `hls.js` for HLS st
 
 Some IPTV streams that require VLC-specific demuxers/codecs may not play in the WebView. For those streams, use the **Open in VLC** fallback. A deeper embedded VLC backend can be added later, but it is more complex than the Python/PySide6 version.
 
-On Windows, in-app playback goes through a local VLC bridge. Since 2.0.6 the bridge only remuxes the video and converts the audio to AAC, which uses far less CPU than full re-encoding. Video is re-encoded to H.264 only when the built-in player reports a codec it cannot decode (for example HEVC or MPEG-2). The player reconnects automatically with increasing delays and stops after 5 failed attempts, so an offline channel does not keep using resources.
+Since 2.0.7 live channels play directly in the built-in player on Windows and Linux: a small local proxy in the Rust backend fetches the stream (adding the CORS headers the WebView needs and the `User-Agent` / `Referer` the playlist asks for), HLS goes to `hls.js` and MPEG-TS (most Xtream channels) to `mpegts.js`. Nothing is decoded or re-encoded outside the WebView, so CPU use stays very low.
+
+Channels the built-in player cannot handle switch automatically to a local VLC bridge, which only remuxes the video and converts the audio to AAC; video is re-encoded to H.264 only when the codec still cannot be decoded (for example HEVC or MPEG-2). A channel that needed VLC goes straight to it the next time during the same session. **Settings → Live TV playback engine → Always through VLC** forces the bridge for every channel, which helps when some channels play without sound (AC-3 / MP2 audio).
+
+Stream headers are read from `http-user-agent` / `http-referrer` attributes, `#EXTVLCOPT:` lines, Kodi-style `#EXTHTTP:{...}` lines and `url|User-Agent=...&Referer=...` suffixes, and are also passed to VLC.
+
+The player reconnects automatically with increasing delays and stops after 5 failed attempts, so an offline channel does not keep using resources.
 
 ## Requirements
 

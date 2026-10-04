@@ -29,6 +29,9 @@ export interface Channel {
   catchupDays?: number | null;
   catchupType?: string | null;
   catchupSource?: string | null;
+  /** HTTP headers the playlist asks for when fetching this stream. */
+  userAgent?: string | null;
+  referrer?: string | null;
 }
 
 export interface ChannelLoadResult {
@@ -80,6 +83,8 @@ export interface AppSettings {
   epgTimezoneMode: 'auto' | 'local' | 'manual';
   epgTimeOffsetMinutes: number;
   resumeLastChannel: boolean;
+  /** 'auto': built-in player first, VLC bridge only when needed; 'vlc': always use the VLC bridge. */
+  playbackEngine: 'auto' | 'vlc';
 }
 
 export interface AppInfo {
@@ -172,4 +177,16 @@ export interface VodPlayRequest {
   extension?: string | null;
   cmd?: string | null;
   episodeNumber?: number | null;
+}
+
+/** Request headers a playlist asks for when fetching a stream. */
+export interface StreamHeaders {
+  userAgent?: string | null;
+  referrer?: string | null;
+}
+
+/** A stream prepared for the built-in player through the local media proxy. */
+export interface DirectStream {
+  url: string;
+  format: 'hls' | 'mpegts' | 'native';
 }

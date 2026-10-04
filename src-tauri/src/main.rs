@@ -1,6 +1,7 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 mod db;
+mod media_proxy;
 mod models;
 mod providers;
 mod xtream;
@@ -233,7 +234,17 @@ fn build_external_player_command(command_setting: &str) -> (Command, String) {
     (Command::new(command), command.to_string())
 }
 
-fn open_player_process(state: State<AppState>, url: String, detached: bool) -> Result<(), String> {
+/// Passes the User-Agent / Referer a playlist asks for on to VLC.
+fn add_vlc_http_headers(cmd: &mut Command, user_agent: Option<&str>, referrer: Option<&str>) {
+    if let Some(user_agent) = user_agent.map(str::trim).filter(|v| !v.is_empty()) {
+        cmd.arg(format!("--http-user-agent={user_agent}"));
+    }
+    if let Some(referrer) = referrer.map(str::trim).filter(|v| !v.is_empty()) {
+        cmd.arg(format!("--http-referrer={referrer}"));
+    }
+}
+
+fn open_player_process(state: State<AppState>, url: String, detached: bool, user_agent: Option<String>, referrer: Option<String>) -> Result<(), String> {
     let settings = state.db.lock().map_err(err)?.get_settings().map_err(err)?;
     let (mut cmd, label) = build_external_player_command(&settings.external_player_command);
 
@@ -262,6 +273,7 @@ fn open_player_process(state: State<AppState>, url: String, detached: bool) -> R
         }
     }
 
+    add_vlc_http_headers(&mut cmd, user_agent.as_deref(), referrer.as_deref());
     cmd.arg(url);
 
     let child = cmd
@@ -271,6 +283,13 @@ fn open_player_process(state: State<AppState>, url: String, detached: bool) -> R
     Ok(())
 }
 
+
+/// Prepares a stream for direct playback in the WebView through the local media proxy.
+#[tauri::command]
+async fn prepare_direct_stream(url: String, user_agent: Option<String>, referrer: Option<String>) -> Result<media_proxy::DirectStream, String> {
+    let headers = media_proxy::StreamHeaders { user_agent, referrer };
+    media_proxy::prepare(&url, &headers).await.map_err(err)
+}
 
 #[tauri::command]
 fn stop_vlc_bridge(state: State<AppState>) -> Result<(), String> {
@@ -293,7 +312,13 @@ fn bridge_playlist_ready(index_path: &std::path::Path) -> bool {
 /// which keeps CPU usage low. `transcode = true` also re-encodes video to H.264 for codecs the
 /// WebView cannot decode (HEVC, MPEG-2, ...).
 #[tauri::command]
-async fn start_vlc_bridge(state: State<'_, AppState>, url: String, transcode: Option<bool>) -> Result<String, String> {
+async fn start_vlc_bridge(
+    state: State<'_, AppState>,
+    url: String,
+    transcode: Option<bool>,
+    user_agent: Option<String>,
+    referrer: Option<String>,
+) -> Result<String, String> {
     stop_vlc_bridge_internal(&state)?;
     let generation = VLC_BRIDGE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let transcode = transcode.unwrap_or(false);
@@ -341,8 +366,9 @@ async fn start_vlc_bridge(state: State<'_, AppState>, url: String, transcode: Op
         .arg("--quiet")
         .arg("--no-video-title-show")
         .arg("--http-reconnect")
-        .arg(format!("--network-caching={}", settings.network_cache_ms))
-        .arg(url)
+        .arg(format!("--network-caching={}", settings.network_cache_ms));
+    add_vlc_http_headers(&mut cmd, user_agent.as_deref(), referrer.as_deref());
+    cmd.arg(url)
         .arg("--sout")
         .arg(sout)
         .arg("--sout-keep");
@@ -590,15 +616,15 @@ fn shutdown_playback(state: State<AppState>, app: tauri::AppHandle) -> Result<()
 }
 
 #[tauri::command]
-fn open_external_player(state: State<AppState>, url: String) -> Result<(), String> {
+fn open_external_player(state: State<AppState>, url: String, user_agent: Option<String>, referrer: Option<String>) -> Result<(), String> {
     stop_vlc_bridge_internal(&state)?;
-    open_player_process(state, url, false)
+    open_player_process(state, url, false, user_agent, referrer)
 }
 
 #[tauri::command]
-fn open_detached_external_player(state: State<AppState>, url: String) -> Result<(), String> {
+fn open_detached_external_player(state: State<AppState>, url: String, user_agent: Option<String>, referrer: Option<String>) -> Result<(), String> {
     stop_vlc_bridge_internal(&state)?;
-    open_player_process(state, url, true)
+    open_player_process(state, url, true, user_agent, referrer)
 }
 
 #[tauri::command]
@@ -695,6 +721,7 @@ pub fn run() {
             save_settings,
             open_url,
             start_vlc_bridge,
+            prepare_direct_stream,
             stop_vlc_bridge,
             open_external_player,
             open_detached_external_player,

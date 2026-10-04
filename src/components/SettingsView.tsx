@@ -96,6 +96,14 @@ export function SettingsView({ settings: savedSettings, onSettings, onDataChange
           <input type="checkbox" checked={settings.autoRestart} onChange={(e) => update({ autoRestart: e.target.checked })} />
         </label>
         <label className="block">
+          <span className="label">Live TV playback engine</span>
+          <select value={settings.playbackEngine} onChange={(e) => update({ playbackEngine: e.target.value as AppSettings['playbackEngine'] })} className="field mt-2">
+            <option value="auto">Built-in player, VLC only when needed (recommended)</option>
+            <option value="vlc">Always through VLC</option>
+          </select>
+          <p className="mt-2 text-xs text-slate-500">The built-in player uses almost no CPU. Channels it cannot play (for example HEVC video or AC-3 audio) switch to VLC automatically. Choose "Always through VLC" if some channels play without sound.</p>
+        </label>
+        <label className="block">
           <span className="label">Network cache value</span>
           <input type="number" min={300} max={30000} step={500} value={settings.networkCacheMs} onChange={(e) => update({ networkCacheMs: Number(e.target.value) })} className="field mt-2" />
         </label>

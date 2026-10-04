@@ -4,6 +4,7 @@ import Hls from 'hls.js';
 import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
 import './styles/globals.css';
+import { loadMpegts, MPEGTS_LIVE_CONFIG, streamFormat } from './lib/stream';
 
 declare global {
   interface Window {
@@ -19,8 +20,11 @@ function PipApp() {
   const [needsUserAction, setNeedsUserAction] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const mpegtsRef = useRef<{ destroy: () => void } | null>(null);
+  const generationRef = useRef(0);
 
   const cleanup = () => {
+    generationRef.current += 1;
     const video = videoRef.current;
     if (video) {
       video.pause();
@@ -29,6 +33,12 @@ function PipApp() {
     }
     hlsRef.current?.destroy();
     hlsRef.current = null;
+    try {
+      mpegtsRef.current?.destroy();
+    } catch {
+      // Already torn down.
+    }
+    mpegtsRef.current = null;
   };
 
   useEffect(() => {
@@ -97,10 +107,24 @@ function PipApp() {
 
     if (!src) return;
 
-    const lower = src.toLowerCase();
-    const isHls = lower.includes('.m3u8') || lower.includes('m3u8');
-    if (isHls && Hls.isSupported()) {
-      const hls = new Hls({ lowLatencyMode: true, backBufferLength: 30 });
+    const format = streamFormat(src);
+    if (format === 'mpegts') {
+      const generation = generationRef.current;
+      loadMpegts()
+        .then((mpegts) => {
+          if (generation !== generationRef.current || !mpegts.isSupported()) return;
+          const player = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: src }, MPEGTS_LIVE_CONFIG);
+          mpegtsRef.current = player;
+          player.attachMediaElement(video);
+          player.load();
+          play().catch(() => undefined);
+        })
+        .catch(() => undefined);
+      return cleanup;
+    }
+
+    if (format === 'hls' && Hls.isSupported()) {
+      const hls = new Hls({ lowLatencyMode: false, backBufferLength: 10 });
       hlsRef.current = hls;
       hls.loadSource(src);
       hls.attachMedia(video);

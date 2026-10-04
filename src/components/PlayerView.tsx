@@ -1,6 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, ExternalLink, History, Keyboard, LayoutGrid, Maximize2, Play, Radio, RefreshCw, Search } from 'lucide-react';
-import { Channel, EpgGridItem, EpgNow, EpgProgram, AppSettings, Subscription } from '../lib/types';
+import { Channel, EpgGridItem, EpgNow, EpgProgram, AppSettings, StreamHeaders, Subscription } from '../lib/types';
+import type { StreamFormat } from '../lib/stream';
 import { api, isTauriRuntime } from '../lib/api';
 import { VideoSurface, VideoSurfaceHandle } from './VideoSurface';
 import { ChannelList, ChannelListHandle } from './ChannelList';
@@ -23,6 +24,23 @@ const FILTER_RECENT = '__recent__';
 const UNCATEGORIZED = 'Uncategorized';
 /** Delay before a channel picked with the arrow keys starts playing, so quick zapping does not resolve every stream. */
 const ZAP_DELAY_MS = 400;
+
+/** 'direct': built-in player via the local proxy; 'bridge': VLC remux; 'transcode': VLC with video re-encoding. */
+type PlaybackMode = 'direct' | 'bridge' | 'transcode';
+
+interface ActiveStream {
+  url: string;
+  label: string;
+  seq: number;
+  /** Identifies the channel (or archive programme) across sessions of zapping. */
+  key: string;
+  headers: StreamHeaders;
+  mode: PlaybackMode;
+}
+
+function channelHeaders(channel: Channel): StreamHeaders {
+  return { userAgent: channel.userAgent, referrer: channel.referrer };
+}
 const EPG_REFRESH_MS = 60_000;
 
 function formatTime(epochSeconds: number): string {
@@ -43,11 +61,15 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [currentUrl, setCurrentUrl] = useState('');
   const [activeStreamUrl, setActiveStreamUrl] = useState('');
-  /** The stream currently fed through the VLC bridge, so it can be restarted with video transcoding if needed. */
-  const bridgeStreamRef = useRef<{ url: string; label: string; seq: number; transcoded: boolean } | null>(null);
+  /** How the current stream reaches the embedded player, so a failure can move it to the next way. */
+  const streamRef = useRef<ActiveStream | null>(null);
+  const [streamMode, setStreamMode] = useState<PlaybackMode | null>(null);
+  const [currentFormat, setCurrentFormat] = useState<StreamFormat | undefined>(undefined);
+  /** Channels that needed VLC in this session start there directly the next time. */
+  const vlcNeededRef = useRef(new Map<string, PlaybackMode>());
+  const activeHeadersRef = useRef<StreamHeaders>({});
   /** Where the stream runs when it is not in the embedded player. */
   const [playingElsewhere, setPlayingElsewhere] = useState<'vlc' | 'window' | null>(null);
-  const [platform, setPlatform] = useState('web');
   const [loading, setLoading] = useState(false);
   const [epgPrograms, setEpgPrograms] = useState<EpgProgram[]>([]);
   const [epgLoading, setEpgLoading] = useState(false);
@@ -76,7 +98,6 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
     });
   }, []);
 
-  const isWindowsRuntime = isTauriRuntime() && platform === 'windows';
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -88,13 +109,6 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
       window.removeEventListener('beforeunload', shutdown);
       api.shutdownPlayback().catch(() => undefined);
     };
-  }, []);
-
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    api.currentPlatform()
-      .then(setPlatform)
-      .catch(() => setPlatform('unknown'));
   }, []);
 
   useEffect(() => {
@@ -269,50 +283,86 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
   };
 
   /**
-   * Starts a resolved stream in the embedded player (through the VLC bridge on Windows).
-   * The bridge only remuxes by default; `transcode` re-encodes video for codecs the WebView cannot decode.
+   * Starts a resolved stream in the embedded player.
+   * 'direct': built-in player through the local proxy (hls.js / mpegts.js), almost no CPU.
+   * 'bridge': VLC remuxes the stream to local HLS. 'transcode': VLC also re-encodes the video.
    */
-  const startStream = async (url: string, seq: number, label: string, transcode = false) => {
+  const startStream = async (url: string, seq: number, label: string, key: string, headers: StreamHeaders = {}, mode?: PlaybackMode) => {
     setActiveStreamUrl(url);
+    activeHeadersRef.current = headers;
     setPlayingElsewhere(null);
-    bridgeStreamRef.current = null;
+    streamRef.current = null;
 
-    let playbackUrl = url;
-    let usedBridge = false;
-
-    if (isWindowsRuntime) {
-      try {
-        onStatus(transcode ? `Converting ${label} for the built-in player...` : `Connecting to ${label}...`);
-        playbackUrl = await api.startVlcBridge(url, transcode);
-        usedBridge = true;
-      } catch (bridgeError) {
-        if (seq !== playSeqRef.current) return false;
-        const message = String(bridgeError);
-        // Only fall back to direct playback when VLC itself is missing; an offline stream will not play there either.
-        if (!message.includes('Could not start VLC bridge')) {
-          setCurrentUrl('');
-          onStatus(message);
-          return false;
-        }
-        onStatus(`VLC bridge could not start. Trying direct WebView playback. ${message}`);
-      }
-      if (seq !== playSeqRef.current) return false;
+    if (!isTauriRuntime()) {
+      setStreamMode(null);
+      setCurrentFormat(undefined);
+      setCurrentUrl(url);
+      onStatus(`Playing ${label}.`);
+      return true;
     }
 
-    if (usedBridge) bridgeStreamRef.current = { url, label, seq, transcoded: transcode };
-    setCurrentUrl(playbackUrl);
-    onStatus(usedBridge ? `Playing ${label}${transcode ? ' (converted)' : ''}.` : `Playing ${label}.`);
-    return true;
+    let chosen: PlaybackMode = mode ?? (settings.playbackEngine === 'vlc' ? 'bridge' : vlcNeededRef.current.get(key) ?? 'direct');
+
+    if (chosen === 'direct') {
+      try {
+        onStatus(`Connecting to ${label}...`);
+        const direct = await api.prepareDirectStream(url, headers);
+        if (seq !== playSeqRef.current) return false;
+        streamRef.current = { url, label, seq, key, headers, mode: 'direct' };
+        setStreamMode('direct');
+        setCurrentFormat(direct.format);
+        setCurrentUrl(direct.url);
+        onStatus(`Playing ${label}.`);
+        return true;
+      } catch (error) {
+        if (seq !== playSeqRef.current) return false;
+        onStatus(`The built-in player cannot open ${label} (${String(error)}). Trying VLC...`);
+        chosen = 'bridge';
+      }
+    }
+
+    try {
+      if (mode !== 'transcode') onStatus(`Connecting to ${label} through VLC...`);
+      const bridgeUrl = await api.startVlcBridge(url, chosen === 'transcode', headers);
+      if (seq !== playSeqRef.current) return false;
+      streamRef.current = { url, label, seq, key, headers, mode: chosen };
+      setStreamMode(chosen);
+      setCurrentFormat('hls');
+      setCurrentUrl(bridgeUrl);
+      onStatus(`Playing ${label} through VLC${chosen === 'transcode' ? ' (converted)' : ''}.`);
+      return true;
+    } catch (bridgeError) {
+      if (seq !== playSeqRef.current) return false;
+      const message = String(bridgeError);
+      setCurrentUrl('');
+      setStreamMode(null);
+      onStatus(message.includes('Could not start VLC bridge')
+        ? `${label} cannot be played by the built-in player and VLC was not found. Install VLC or set its path in Settings.`
+        : message);
+      return false;
+    }
   };
 
-  /** The embedded player cannot decode the current stream: restart the bridge with video transcoding once. */
-  const handleUnsupportedStream = () => {
-    const bridged = bridgeStreamRef.current;
-    if (!bridged || bridged.transcoded || bridged.seq !== playSeqRef.current) {
+  /**
+   * The embedded player gave up: move the stream to the next way of playing it
+   * (built-in player → VLC bridge → VLC with video conversion).
+   */
+  const handleEmbeddedFailure = (unsupported: boolean) => {
+    const current = streamRef.current;
+    const next: PlaybackMode | null = !current
+      ? null
+      : current.mode === 'direct'
+        ? 'bridge'
+        : current.mode === 'bridge' && unsupported
+          ? 'transcode'
+          : null;
+    if (!current || !next || current.seq !== playSeqRef.current) {
       onStatus('This stream format is not supported by the built-in player. Try Open in VLC.');
       return;
     }
-    startStream(bridged.url, bridged.seq, bridged.label, true).catch((error) => onStatus(String(error)));
+    vlcNeededRef.current.set(current.key, next);
+    onStatus(next === 'transcode' ? `Converting ${current.label} for the built-in player...` : `${current.label} needs VLC, switching...`);
+    startStream(current.url, current.seq, current.label, current.key, current.headers, next).catch((error) => onStatus(String(error)));
   };
 
   const beginPlayback = (channel: Channel) => {
@@ -332,7 +382,7 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
       const url = await api.resolveChannelStream(Number(subscriptionId), channel);
       // A newer channel was requested while this one was resolving.
       if (seq !== playSeqRef.current) return;
-      if (!(await startStream(url, seq, channel.name))) return;
+      if (!(await startStream(url, seq, channel.name, channel.id, channelHeaders(channel)))) return;
       api.recordRecent(Number(subscriptionId), channel.id)
         .then(() => setRecents((prev) => [channel.id, ...prev.filter((id) => id !== channel.id)].slice(0, 30)))
         .catch(() => undefined);
@@ -349,7 +399,7 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
       const url = await api.resolveCatchupStream(channel, start, stop);
       if (seq !== playSeqRef.current) return;
       setCatchup({ title, start });
-      await startStream(url, seq, `${title} (archive)`);
+      await startStream(url, seq, `${title} (archive)`, `${channel.id}|archive`, channelHeaders(channel));
     } catch (err) {
       if (seq === playSeqRef.current) onStatus(`Catch-up failed: ${String(err)}`);
     }
@@ -529,7 +579,7 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
       onStatus('Start a channel before opening external player.');
       return;
     }
-    await api.openExternalPlayer(activeStreamUrl);
+    await api.openExternalPlayer(activeStreamUrl, activeHeadersRef.current);
     await stopEmbeddedPlayback();
     setPlayingElsewhere('vlc');
     onStatus('Opened in VLC. Embedded playback stopped.');
@@ -637,7 +687,7 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
                 )}
               </h2>
               <p className="text-xs text-slate-500">
-                {isWindowsRuntime ? 'Windows uses a local VLC bridge for in-app playback when needed.' : 'Double-click the video for fullscreen.'}
+                {streamMode === 'bridge' || streamMode === 'transcode' ? 'This channel plays through VLC. Double-click the video for fullscreen.' : 'Double-click the video for fullscreen.'}
               </p>
               <p className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500" title="Keyboard shortcuts">
                 <Keyboard size={13} /> ↑/↓ channel · G guide · F fullscreen · M mute · A audio · C subtitles · R restart · Ctrl+F search
@@ -684,7 +734,16 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
                 </div>
               </div>
             ) : (
-              <VideoSurface ref={videoSurfaceRef} src={currentUrl} title={currentChannel?.name} autoRestart={settings.autoRestart} onStatus={onStatus} onUnsupported={handleUnsupportedStream} />
+              <VideoSurface
+                ref={videoSurfaceRef}
+                src={currentUrl}
+                format={currentFormat}
+                title={currentChannel?.name}
+                autoRestart={settings.autoRestart}
+                onStatus={onStatus}
+                onUnsupported={() => handleEmbeddedFailure(true)}
+                onFailed={streamMode === 'direct' ? () => handleEmbeddedFailure(false) : undefined}
+              />
             )}
           </div>
 
