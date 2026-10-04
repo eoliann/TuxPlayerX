@@ -116,6 +116,8 @@ interface VideoSurfaceProps {
   onFailed?: (reason: string) => void;
   /** Playback engine; detected from the URL when omitted. */
   format?: StreamFormat;
+  /** Extra classes for the outer frame (the mobile player removes the rounded card look). */
+  className?: string;
 }
 
 export interface VideoSurfaceHandle {
@@ -130,7 +132,7 @@ export interface VideoSurfaceHandle {
 }
 
 export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(function VideoSurface(
-  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus, onUnsupported, onFailed, format },
+  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus, onUnsupported, onFailed, format, className },
   ref,
 ) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -698,7 +700,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
   const errorOverlay = src && playbackError && !needsUserAction;
 
   return (
-    <div ref={wrapperRef} className="relative h-full min-h-[260px] overflow-hidden rounded-3xl border border-white/10 bg-black shadow-2xl shadow-black/30 light:border-slate-200">
+    <div ref={wrapperRef} className={cn('relative h-full min-h-[260px] overflow-hidden rounded-3xl border border-white/10 bg-black shadow-2xl shadow-black/30 light:border-slate-200', className)}>
       {src ? (
         <video
           ref={videoRef}

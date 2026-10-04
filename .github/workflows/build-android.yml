@@ -1,0 +1,99 @@
+name: Build Android APK
+
+# Android has its own releases, tagged android-vX.Y.Z (the PC app uses vX.Y.Z).
+# Runs automatically when such a release is published and attaches TuxPlayerX-android.apk to it.
+# It can also be run manually from the Actions tab; give a release tag to attach the APK to that release.
+#
+# Signing secrets (Settings → Secrets and variables → Actions):
+#   ANDROID_KEYSTORE_BASE64  the release keystore (.jks), base64 encoded
+#   ANDROID_KEY_ALIAS        key alias inside the keystore
+#   ANDROID_KEY_PASSWORD     keystore and key password
+# Without them the workflow still builds, but the APK is unsigned and cannot be installed.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Android release tag to build and attach the APK to, e.g. android-v1.0.0 (leave empty to only build)
+        required: false
+        default: ''
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'android-')
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Use the preinstalled Android NDK
+        run: echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::Signing secrets are not set; the APK will be unsigned."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/release.jks"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "password=$KEY_PASSWORD"
+          } > src-tauri/gen/android/keystore.properties
+
+      # ARM for phones, tablets and TVs; x86_64 for the Android emulator.
+      - name: Build APK
+        run: npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
+
+      - name: Rename APK
+        run: |
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release*.apk' | head -n 1)
+          test -n "$apk" || { echo "APK was not produced"; exit 1; }
+          cp "$apk" TuxPlayerX-android.apk
+          echo "Built $apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TuxPlayerX-android
+          path: TuxPlayerX-android.apk
+
+      - name: Attach APK to release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" TuxPlayerX-android.apk --clobber

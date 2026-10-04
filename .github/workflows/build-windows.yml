@@ -12,6 +12,8 @@ permissions:
 
 jobs:
   windows:
+    # Android releases (android-v*) are built by build-android.yml.
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.release.tag_name, 'android-')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

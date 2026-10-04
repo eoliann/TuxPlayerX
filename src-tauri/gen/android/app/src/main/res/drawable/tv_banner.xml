@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android TV launcher banner (320x180 dp): app icon centred on the app background. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#0B1220" />
+            <size android:width="320dp" android:height="180dp" />
+        </shape>
+    </item>
+    <item android:gravity="center" android:width="140dp" android:height="140dp" android:drawable="@mipmap/ic_launcher_foreground" />
+</layer-list>

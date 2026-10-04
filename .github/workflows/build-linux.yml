@@ -18,6 +18,8 @@ permissions:
 
 jobs:
   linux:
+    # Android releases (android-v*) are built by build-android.yml.
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.release.tag_name, 'android-')
     # Built on the oldest supported Ubuntu so the packages also run on older glibc-based distros.
     runs-on: ubuntu-22.04
     env:

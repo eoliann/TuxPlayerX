@@ -14,3 +14,8 @@ declare module '*.ico' {
   const src: string;
   export default src;
 }
+
+interface ImportMetaEnv {
+  /** Set by the Tauri CLI during dev/build: 'windows', 'linux', 'android', ... */
+  readonly TAURI_ENV_PLATFORM?: string;
+}

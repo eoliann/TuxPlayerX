@@ -468,6 +468,22 @@ async fn load_channels(state: State<'_, AppState>, id: i64, force: Option<bool>)
     Ok(ChannelLoadResult { channels, from_cache: false, fetched_at })
 }
 
+/// Copies a playlist chosen on the device into the app data folder and returns its local path.
+/// Android file pickers hand out content:// URIs that cannot be read again later, so the file is kept here.
+#[tauri::command]
+fn import_playlist_file(app: tauri::AppHandle, name: String, content: String) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(err)?.join("playlists");
+    fs::create_dir_all(&dir).map_err(err)?;
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' })
+        .collect();
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(err)?.as_millis();
+    let path = dir.join(format!("{stamp}-{}", if safe.is_empty() { "playlist.m3u" } else { safe.as_str() }));
+    fs::write(&path, content).map_err(err)?;
+    Ok(path.display().to_string())
+}
+
 /// Writes a backup JSON file to the Downloads folder (or home as a fallback) and returns its path.
 #[tauri::command]
 fn export_backup(state: State<AppState>) -> Result<String, String> {
@@ -728,6 +744,7 @@ pub fn run() {
             open_url,
             start_vlc_bridge,
             prepare_direct_stream,
+            import_playlist_file,
             stop_vlc_bridge,
             open_external_player,
             open_detached_external_player,

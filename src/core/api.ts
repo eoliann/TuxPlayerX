@@ -48,6 +48,7 @@ export const api = {
   shutdownPlayback: () => invoke<void>('shutdown_playback'),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
   exportBackup: () => invoke<string>('export_backup'),
+  importPlaylistFile: (name: string, content: string) => invoke<string>('import_playlist_file', { name, content }),
   importBackup: (content: string) => invoke<ImportSummary>('import_backup', { content }),
 };
 

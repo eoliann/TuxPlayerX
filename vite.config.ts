@@ -9,6 +9,8 @@ const projectRoot = dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   clearScreen: false,
+  // TAURI_ENV_PLATFORM tells the frontend which app to load (desktop or Android).
+  envPrefix: ['VITE_', 'TAURI_ENV_'],
   server: {
     port: 3000,
     strictPort: true,
