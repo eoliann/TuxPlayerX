@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { Features } from 'lightningcss';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,7 +20,18 @@ export default defineConfig({
       ignored: ['**/src-tauri/**'],
     },
   },
+  // Tailwind 4 writes colors as oklch() and color-mix(), which older Android System WebViews (common on
+  // Android TV boxes and emulators) do not understand, leaving backgrounds transparent. Lightning CSS rewrites
+  // them to plain rgb() for these browsers.
+  css: {
+    transformer: 'lightningcss',
+    lightningcss: {
+      targets: { chrome: 87 << 16, safari: 14 << 16 },
+      include: Features.Colors,
+    },
+  },
   build: {
+    cssMinify: 'lightningcss',
     rollupOptions: {
       input: {
         main: resolve(projectRoot, 'index.html'),

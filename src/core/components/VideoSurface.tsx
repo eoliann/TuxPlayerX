@@ -561,7 +561,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
     if (restartAttemptsRef.current >= MAX_RESTARTS) {
       destroyHls();
       videoRef.current?.pause();
-      setPlaybackError(`${reason}. The stream did not recover after ${MAX_RESTARTS} attempts; the channel may be offline. Press Reload to try again or use Open in VLC.`);
+      setPlaybackError(`${reason}. The stream did not recover after ${MAX_RESTARTS} attempts: the channel may be offline, or all connections of your subscription are in use on other devices. Try again in a minute.`);
       onStatusRef.current?.('Stream unavailable, automatic restarts stopped.');
       return;
     }
