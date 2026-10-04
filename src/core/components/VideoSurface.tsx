@@ -129,6 +129,10 @@ export interface VideoSurfaceHandle {
   /** Cycles subtitles (off → track 1 → ... → off) and returns the new label. */
   cycleSubtitles: () => string | undefined;
   stop: () => void;
+  /** Moves the playback position by `seconds` (movies and episodes); returns the new position. */
+  seekBy: (seconds: number) => number | undefined;
+  /** Pauses or resumes; returns true when now paused. */
+  togglePause: () => boolean;
 }
 
 export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(function VideoSurface(
@@ -388,6 +392,20 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       return next < 0 ? 'Off' : subtitleTracks[next].label;
     },
     stop: stopPlayback,
+    seekBy: (seconds: number) => {
+      const video = videoRef.current;
+      if (!video || !Number.isFinite(video.duration)) return undefined;
+      video.currentTime = Math.min(Math.max(0, video.currentTime + seconds), Math.max(0, video.duration - 1));
+      return video.currentTime;
+    },
+    togglePause: () => {
+      const video = videoRef.current;
+      if (!video) return true;
+      const pausing = !video.paused;
+      if (pausing) video.pause();
+      else tryPlay().catch(() => undefined);
+      return pausing;
+    },
   }));
 
   // Resume position and progress reporting (movies and episodes).

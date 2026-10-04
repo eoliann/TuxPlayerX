@@ -4,6 +4,7 @@ import { SeriesEpisode, SeriesInfo, Subscription, VodCategory, VodDetails, VodIt
 import { api } from '../../core/api';
 import { cn } from '../../core/utils';
 import { VideoSurface } from '../../core/components/VideoSurface';
+import { formatClock, loadProgress, saveProgress, type ProgressMap } from '../../core/vodProgress';
 
 interface VodViewProps {
   reloadToken: number;
@@ -21,38 +22,6 @@ interface NowPlaying {
 const CARD_WIDTH = 150;
 const CARD_HEIGHT = 270;
 const CARD_GAP = 14;
-const PROGRESS_KEY = 'tuxplayerx.vodProgress';
-
-type ProgressMap = Record<string, { time: number; duration: number; updatedAt: number }>;
-
-function loadProgress(): ProgressMap {
-  try {
-    return JSON.parse(window.localStorage.getItem(PROGRESS_KEY) || '{}');
-  } catch {
-    return {};
-  }
-}
-
-function saveProgress(key: string, time: number, duration: number) {
-  try {
-    const all = loadProgress();
-    // Finished (or barely started) items do not need a resume point.
-    if (time < 30 || time > duration * 0.95) delete all[key];
-    else all[key] = { time, duration, updatedAt: Date.now() };
-    // Keep the 200 most recent entries.
-    const trimmed = Object.fromEntries(Object.entries(all).sort((a, b) => b[1].updatedAt - a[1].updatedAt).slice(0, 200));
-    window.localStorage.setItem(PROGRESS_KEY, JSON.stringify(trimmed));
-  } catch {
-    // Resume points are a convenience only.
-  }
-}
-
-const formatClock = (seconds: number) => {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
-};
 
 export function VodView({ reloadToken, onPlaybackStart, onStatus }: VodViewProps) {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);

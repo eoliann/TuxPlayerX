@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, Search, Star, Tv } from 'lucide-react';
+import { LayoutGrid, List, RefreshCw, Search, Star, Tv } from 'lucide-react';
 import { AppSettings, Channel, EpgNow, Subscription } from '../core/types';
 import { api } from '../core/api';
 import { cn } from '../core/utils';
@@ -8,11 +8,21 @@ import { MobilePlayer } from './MobilePlayer';
 const ALL = '__all__';
 const FAVORITES = '__favorites__';
 const RECENT = '__recent__';
-/** Every channel row has the same height, so only the rows on screen need to exist in the page. */
-const ROW_HEIGHT = 64;
+/**
+ * Two layouts: 'list' rows (logo, name, now playing) flowing into as many columns as fit,
+ * and a compact 'grid' of logo tiles that shows many channels at once.
+ * Every item has the same height, so only the rows on screen need to exist in the page.
+ */
+type Layout = 'list' | 'grid';
+const LAYOUTS: Record<Layout, { minWidth: number; height: number; minColumns: number }> = {
+  list: { minWidth: 300, height: 64, minColumns: 1 },
+  grid: { minWidth: 104, height: 112, minColumns: 3 },
+};
+const GAP = 8;
 /** Rows rendered above and below the screen, so scrolling and remote navigation stay smooth. */
-const OVERSCAN = 10;
+const OVERSCAN_ROWS = 4;
 const LAST_SUBSCRIPTION_KEY = 'tuxplayerx.mobile.subscription';
+const LAYOUT_KEY = 'tuxplayerx.mobile.channelLayout';
 
 interface Props {
   settings: AppSettings;
@@ -51,7 +61,9 @@ export function LiveTv({ settings, reloadToken, onStatus, onOpenSubscriptions }:
   const [playing, setPlaying] = useState<Channel | null>(null);
   const loadSeq = useRef(0);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const [range, setRange] = useState({ start: 0, end: 30 });
+  const [scrollTop, setScrollTop] = useState(0);
+  const [size, setSize] = useState({ width: 360, height: 600 });
+  const [layout, setLayout] = useState<Layout>(() => (readStorage(LAYOUT_KEY) === 'grid' ? 'grid' : 'list'));
 
   useEffect(() => {
     api.listSubscriptions()
@@ -114,34 +126,38 @@ export function LiveTv({ settings, reloadToken, onStatus, onOpenSubscriptions }:
     return query ? list.filter((channel) => channel.name.toLowerCase().includes(query)) : list;
   }, [channels, filter, favorites, recents, deferredSearch]);
 
-  /** Works out which rows are on screen (plus a margin) from the scroll position. */
-  const updateRange = () => {
-    const list = listRef.current;
-    if (!list) return;
-    const start = Math.max(0, Math.floor(list.scrollTop / ROW_HEIGHT) - OVERSCAN);
-    const end = Math.min(visible.length, Math.ceil((list.scrollTop + list.clientHeight) / ROW_HEIGHT) + OVERSCAN);
-    setRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+  const changeLayout = (next: Layout) => {
+    setLayout(next);
+    writeStorage(LAYOUT_KEY, next);
+    if (listRef.current) listRef.current.scrollTop = 0;
+    setScrollTop(0);
   };
 
   // Back to the top when another list is shown (not when a favorite is toggled).
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0;
+    setScrollTop(0);
   }, [channels, filter, deferredSearch]);
-  // Recompute the rows on screen when the list changes, is shown again or is resized.
-  useEffect(() => {
-    updateRange();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
+  // Track the list size (rotation, window resize, tab shown again).
   useEffect(() => {
     const list = listRef.current;
     if (!list) return;
-    const observer = new ResizeObserver(() => updateRange());
+    const observer = new ResizeObserver(() => setSize({ width: list.clientWidth, height: list.clientHeight }));
     observer.observe(list);
     return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, subscriptions.length]);
+  }, [subscriptions.length]);
 
-  const onScreen = useMemo(() => visible.slice(range.start, range.end), [visible, range]);
+  const spec = LAYOUTS[layout];
+  const innerWidth = Math.max(0, size.width - 16);
+  const columns = Math.max(spec.minColumns, Math.floor((innerWidth + GAP) / (spec.minWidth + GAP)));
+  const itemWidth = (innerWidth - GAP * (columns - 1)) / columns;
+  const rowHeight = spec.height + GAP;
+  const rowCount = Math.ceil(visible.length / columns);
+  const firstRow = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN_ROWS);
+  const lastRow = Math.min(rowCount, Math.ceil((scrollTop + size.height) / rowHeight) + OVERSCAN_ROWS);
+  const rangeStart = firstRow * columns;
+  const rangeEnd = Math.min(visible.length, lastRow * columns);
+  const onScreen = useMemo(() => visible.slice(rangeStart, rangeEnd), [visible, rangeStart, rangeEnd]);
 
   // "Now playing" for the rows on screen, refreshed every minute.
   useEffect(() => {
@@ -224,35 +240,70 @@ export function LiveTv({ settings, reloadToken, onStatus, onOpenSubscriptions }:
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <input value={search} onChange={(e) => setSearch(e.target.value)} className="field" style={{ paddingLeft: '2.25rem' }} placeholder="Search channels" />
           </div>
+          <button
+            type="button"
+            onClick={() => changeLayout(layout === 'list' ? 'grid' : 'list')}
+            className="btn-secondary shrink-0 px-3"
+            aria-label={layout === 'list' ? 'Show channels as a grid' : 'Show channels as a list'}
+          >
+            {layout === 'list' ? <LayoutGrid size={18} /> : <List size={18} />}
+          </button>
         </div>
+        <div className="px-1 text-[11px] text-slate-500">{visible.length.toLocaleString()} channels</div>
       </div>
 
-      <div ref={listRef} onScroll={updateRange} data-nav-group className="min-h-0 flex-1 overflow-y-auto px-2">
+      <div ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} data-nav-group className="min-h-0 flex-1 overflow-y-auto px-2 pt-2">
         {visible.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-400">{loading ? 'Loading channels...' : 'No channels here.'}</div>
         ) : (
-          <ul className="relative" style={{ height: visible.length * ROW_HEIGHT }}>
+          <ul className="relative" style={{ height: rowCount * rowHeight }}>
             {onScreen.map((channel, index) => {
+              const position = rangeStart + index;
+              const style = {
+                top: Math.floor(position / columns) * rowHeight,
+                left: (position % columns) * (itemWidth + GAP),
+                width: itemWidth,
+                height: spec.height,
+              };
+              const favorite = favoriteSet.has(channel.id);
               const now = epgNow[channel.id];
+              const star = (
+                <button
+                  type="button"
+                  onClick={() => toggleFavorite(channel)}
+                  className={cn('shrink-0 rounded-xl', layout === 'list' ? 'p-3' : 'absolute right-0.5 top-0.5 p-1.5', favorite ? 'text-amber-300' : 'text-slate-500')}
+                  aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'}
+                >
+                  <Star size={layout === 'list' ? 18 : 14} fill={favorite ? 'currentColor' : 'none'} />
+                </button>
+              );
               return (
-                <li key={channel.id} className="absolute inset-x-0" style={{ top: (range.start + index) * ROW_HEIGHT, height: ROW_HEIGHT }}>
-                  <div className="flex h-full items-center gap-1 rounded-2xl hover:bg-white/5 light:hover:bg-slate-200/60">
-                    <button type="button" onClick={() => setPlaying(channel)} className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl p-2 text-left">
-                      <ChannelLogo src={channel.logo} name={channel.name} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-bold">{channel.name}</span>
-                        <span className="block truncate text-xs text-slate-400">{now ? `${now.startLabel} ${now.title}` : channel.group || ''}</span>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => toggleFavorite(channel)}
-                      className={cn('shrink-0 rounded-xl p-3', favoriteSet.has(channel.id) ? 'text-amber-300' : 'text-slate-500')}
-                      aria-label={favoriteSet.has(channel.id) ? 'Remove from favorites' : 'Add to favorites'}
-                    >
-                      <Star size={18} fill={favoriteSet.has(channel.id) ? 'currentColor' : 'none'} />
-                    </button>
-                  </div>
+                <li key={channel.id} className="absolute" style={style}>
+                  {layout === 'list' ? (
+                    <div className="flex h-full items-center gap-1 rounded-2xl hover:bg-white/5 light:hover:bg-slate-200/60">
+                      <button type="button" onClick={() => setPlaying(channel)} className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl p-2 text-left">
+                        <ChannelLogo src={channel.logo} name={channel.name} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-bold">{channel.name}</span>
+                          <span className="block truncate text-xs text-slate-400">{now ? `${now.startLabel} ${now.title}` : channel.group || ''}</span>
+                        </span>
+                      </button>
+                      {star}
+                    </div>
+                  ) : (
+                    <div className="relative h-full rounded-2xl border border-white/10 bg-white/[0.04] light:border-slate-200 light:bg-white">
+                      <button
+                        type="button"
+                        onClick={() => setPlaying(channel)}
+                        className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-2xl p-2 text-center"
+                        title={now ? `${channel.name} · ${now.title}` : channel.name}
+                      >
+                        <ChannelLogo src={channel.logo} name={channel.name} />
+                        <span className="line-clamp-2 w-full text-[11px] font-bold leading-tight">{channel.name}</span>
+                      </button>
+                      {star}
+                    </div>
+                  )}
                 </li>
               );
             })}

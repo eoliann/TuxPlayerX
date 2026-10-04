@@ -80,7 +80,7 @@ export function MobilePlayer({
     setPrograms([]);
     if (settings.epgUrl?.trim()) {
       api.loadEpgPrograms(channel)
-        .then((list) => setPrograms(list))
+        .then((list) => setPrograms(list ?? []))
         .catch(() => undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

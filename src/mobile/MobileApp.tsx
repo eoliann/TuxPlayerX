@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ListVideo, Settings, Tv } from 'lucide-react';
+import { Component, useEffect, useState, type ReactNode } from 'react';
+import { Clapperboard, ListVideo, Settings, Tv } from 'lucide-react';
 import { AppSettings } from '../core/types';
 import { api } from '../core/api';
 import { cn } from '../core/utils';
@@ -7,8 +7,9 @@ import { enableSpatialNavigation } from './spatialNav';
 import { LiveTv } from './LiveTv';
 import { MobileSubscriptions } from './MobileSubscriptions';
 import { MobileSettings } from './MobileSettings';
+import { MobileVod } from './MobileVod';
 
-type Tab = 'live' | 'subscriptions' | 'settings';
+type Tab = 'live' | 'vod' | 'subscriptions' | 'settings';
 
 const defaultSettings: AppSettings = {
   theme: 'dark',
@@ -25,9 +26,32 @@ const defaultSettings: AppSettings = {
 
 const TABS: { key: Tab; label: string; icon: typeof Tv }[] = [
   { key: 'live', label: 'Live TV', icon: Tv },
+  { key: 'vod', label: 'Movies & Series', icon: Clapperboard },
   { key: 'subscriptions', label: 'Subscriptions', icon: ListVideo },
   { key: 'settings', label: 'Settings', icon: Settings },
 ];
+
+/** Keeps one failing screen from blanking the whole app; offers a reload instead. */
+class ScreenBoundary extends Component<{ children: ReactNode }, { error: string }> {
+  state = { error: '' };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: String(error) };
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="grid h-full place-items-center p-8 text-center">
+        <div>
+          <div className="text-lg font-black">Something went wrong</div>
+          <p className="mt-2 max-w-md break-words text-xs text-slate-400">{this.state.error}</p>
+          <button type="button" onClick={() => window.location.reload()} className="btn-primary mx-auto mt-5">Reload</button>
+        </div>
+      </div>
+    );
+  }
+}
 
 /** Android app (phones, tablets and TVs): bottom navigation on phones, a side rail on wide screens. */
 export default function MobileApp() {
@@ -81,14 +105,17 @@ export default function MobileApp() {
       <nav className="hidden w-24 shrink-0 flex-col gap-2 border-r border-white/10 p-2 pt-6 md:flex light:border-slate-200">{nav}</nav>
       <div className="flex min-w-0 flex-1 flex-col">
         <main className="min-h-0 flex-1 overflow-y-auto">
+          <ScreenBoundary>
           {/* Live TV stays mounted so the channel list and position survive tab switches. */}
           <div className={tab === 'live' ? 'h-full' : 'hidden'}>
             {settingsLoaded && (
               <LiveTv settings={settings} reloadToken={reloadToken} onStatus={setStatus} onOpenSubscriptions={() => setTab('subscriptions')} />
             )}
           </div>
+          {tab === 'vod' && <MobileVod reloadToken={reloadToken} onStatus={setStatus} />}
           {tab === 'subscriptions' && <MobileSubscriptions onChanged={() => setReloadToken((x) => x + 1)} onStatus={setStatus} />}
           {tab === 'settings' && <MobileSettings settings={settings} onSettings={setSettings} onStatus={setStatus} />}
+          </ScreenBoundary>
         </main>
         <nav className="flex shrink-0 border-t border-white/10 bg-slate-950/95 px-2 pb-1 md:hidden light:border-slate-200 light:bg-white">{nav}</nav>
       </div>
