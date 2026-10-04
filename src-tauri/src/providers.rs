@@ -810,7 +810,12 @@ async fn ensure_vod_available(url: &str) -> anyhow::Result<()> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     if status.is_client_error() || status.is_server_error() {
-        anyhow::bail!("The provider refused this title (HTTP {}). Your subscription may not include movies/series.", status.as_u16());
+        // Xtream panels answer 401/403/509 both when the package has no VOD and when every allowed
+        // connection is busy (often a single one, still held for a while after the last stream stopped).
+        anyhow::bail!(
+            "The provider refused this title (HTTP {}). All connections of your subscription may be in use: stop playback on other devices and try again in a minute. Otherwise the subscription may not include movies/series.",
+            status.as_u16()
+        );
     }
     if content_type.starts_with("text/html") || content_type.starts_with("text/plain") {
         anyhow::bail!("The provider returned no video for this title. Your subscription may not include movies/series.");
@@ -1599,6 +1604,107 @@ mod bench {
             if !epg_entries_for(&index, "x", name, None).is_empty() { found += 1; }
         }
         println!("lookup for {} channels ({} with data): {:?}", names.len(), found, started.elapsed());
+    }
+
+    /// End-to-end check against a real playlist (live channels, a movie and an episode through the media proxy):
+    /// `TUXPLAYERX_TEST_M3U=<playlist url> cargo test real_playlist_report -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_playlist_report() {
+        use crate::media_proxy::{prepare, StreamHeaders};
+        use crate::models::VodPlayRequest;
+        let Ok(url) = std::env::var("TUXPLAYERX_TEST_M3U") else { return };
+        let sub = Subscription {
+            id: Some(1), name: "test".into(), sub_type: "m3u".into(), url: Some(url), portal_url: None, mac_address: None,
+            username: None, password: None, is_default: true, expires_at: None, active_connections: None,
+            max_connections: None, created_at: None, updated_at: None,
+        };
+
+        /// Prepares a stream like the app does and reads the first bytes through the local proxy.
+        async fn probe(label: &str, target: &str, headers: &StreamHeaders) {
+            let started = Instant::now();
+            match prepare(target, headers).await {
+                Err(e) => println!("  {label}: prepare failed: {e}"),
+                Ok(direct) => {
+                    let response = reqwest::Client::new().get(&direct.url).header(reqwest::header::RANGE, "bytes=0-").send().await;
+                    match response {
+                        Err(e) => println!("  {label}: [{}] proxy request failed: {e}", direct.format),
+                        Ok(mut response) => {
+                            let status = response.status();
+                            let content_type = response.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                            let mut bytes = Vec::new();
+                            while bytes.len() < 256 * 1024 {
+                                match tokio::time::timeout(Duration::from_secs(8), response.chunk()).await {
+                                    Ok(Ok(Some(chunk))) => bytes.extend_from_slice(&chunk),
+                                    _ => break,
+                                }
+                            }
+                            let head = String::from_utf8_lossy(&bytes[..bytes.len().min(60)]).replace('\n', "\\n");
+                            println!(
+                                "  {label}: [{}] HTTP {status} {content_type} · {} KB in {:.1}s · starts {:?}",
+                                direct.format, bytes.len() / 1024, started.elapsed().as_secs_f32(), if bytes.first() == Some(&0x47) { "TS sync 0x47".to_string() } else { head },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        tauri::async_runtime::block_on(async move {
+            let started = Instant::now();
+            let channels = load_channels(&sub).await.expect("playlist loads");
+            let groups: HashSet<_> = channels.iter().filter_map(|c| c.group.clone()).collect();
+            let with_headers = channels.iter().filter(|c| c.user_agent.is_some() || c.referrer.is_some()).count();
+            let catchup = channels.iter().filter(|c| c.catchup_days.is_some()).count();
+            println!("{} channels, {} groups, {with_headers} with custom headers, {catchup} with catch-up, loaded in {:.1}s",
+                channels.len(), groups.len(), started.elapsed().as_secs_f32());
+            let mut by_ext: HashMap<String, usize> = HashMap::new();
+            for channel in &channels {
+                let path = Url::parse(&channel.stream_url).map(|u| u.path().to_string()).unwrap_or_default();
+                let ext = path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).filter(|e| e.len() <= 4).unwrap_or_else(|| "(none)".into());
+                *by_ext.entry(ext).or_default() += 1;
+            }
+            println!("stream types by extension: {by_ext:?}");
+
+            println!("live channels:");
+            let step = (channels.len() / 4).max(1);
+            for channel in channels.iter().step_by(step).take(4) {
+                let headers = StreamHeaders { user_agent: channel.user_agent.clone(), referrer: channel.referrer.clone() };
+                probe(&channel.name, &channel.stream_url, &headers).await;
+            }
+
+            for kind in ["movie", "series"] {
+                println!("{kind}:");
+                let categories = match vod_categories(&sub, kind).await {
+                    Ok(list) => list,
+                    Err(e) => { println!("  categories failed: {e}"); continue; }
+                };
+                println!("  {} categories", categories.len());
+                let Some(category) = categories.first() else { continue };
+                let page = match vod_items(&sub, kind, &category.id, 1, false).await {
+                    Ok(page) => page,
+                    Err(e) => { println!("  items failed: {e}"); continue; }
+                };
+                println!("  '{}': {} items (more: {}), {} with posters", category.name, page.items.len(), page.has_more,
+                    page.items.iter().filter(|i| i.poster.is_some()).count());
+                let Some(item) = page.items.first() else { continue };
+                let request = if kind == "movie" {
+                    VodPlayRequest { kind: "movie".into(), id: item.id.clone(), extension: item.extension.clone(), cmd: item.cmd.clone(), episode_number: None }
+                } else {
+                    let info = match series_info(&sub, item).await {
+                        Ok(info) => info,
+                        Err(e) => { println!("  series info failed: {e}"); continue; }
+                    };
+                    let Some(episode) = info.seasons.iter().flat_map(|s| s.episodes.iter()).next() else { println!("  no episodes"); continue };
+                    println!("  '{}': {} seasons", info.name, info.seasons.len());
+                    VodPlayRequest { kind: "episode".into(), id: episode.id.clone(), extension: episode.extension.clone(), cmd: episode.cmd.clone(), episode_number: None }
+                };
+                match resolve_vod_stream(&sub, &request).await {
+                    Ok(stream) => probe(&item.name, &stream, &StreamHeaders::default()).await,
+                    Err(e) => println!("  {}: resolve failed: {e}", item.name),
+                }
+            }
+        });
     }
 
     /// Match report for real channel names: `EPG_FILE=... EPG_NAMES_FILE=names.txt cargo test epg_match_report -- --ignored --nocapture`

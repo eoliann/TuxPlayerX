@@ -5,7 +5,7 @@ const root = process.cwd();
 const packagePath = path.join(root, 'package.json');
 const cargoPath = path.join(root, 'src-tauri', 'Cargo.toml');
 const tauriConfigPath = path.join(root, 'src-tauri', 'tauri.conf.json');
-const appMetaPath = path.join(root, 'src', 'lib', 'appMeta.ts');
+const appMetaPath = path.join(root, 'src', 'core', 'appMeta.ts');
 
 function fail(message) {
   console.error(`[sync-version] ${message}`);

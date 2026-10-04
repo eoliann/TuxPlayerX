@@ -4,10 +4,14 @@ build/
 .vscode/
 .DS_Store
 src-tauri/target/
-src-tauri/gen/
+src-tauri/gen/*
+!src-tauri/gen/android/
 *.log
 .env
 .env.local
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Android Studio project settings (local)
+.idea/

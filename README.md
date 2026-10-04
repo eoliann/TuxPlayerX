@@ -19,10 +19,12 @@
 ![Latest RPM Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerX_x86_64.rpm?style=plastic)
 ![RPM Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerX_x86_64.rpm?style=plastic)
 
+![Android Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerX-android.apk?style=plastic)
+
 
 ![Total Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/total?style=plastic)
 
-![OS](https://img.shields.io/badge/OS-Linux_&_Windows-blue?style=plastic)
+![OS](https://img.shields.io/badge/OS-Linux_&_Windows_&_Android-blue?style=plastic)
 ![Lang](https://img.shields.io/badge/Lang-Python-magenta?style=plastic)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE.md)
 
@@ -95,6 +97,20 @@ It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a
 - Optional external VLC fallback command
 - Local SQLite storage handled by Rust
 - GitHub-ready About page and release information
+
+## Android app (phones, tablets, Android TV)
+
+TuxPlayerX also runs on Android, from the same code base: the Rust backend (playlists, MAC portals, EPG, the local media proxy) is shared, and `src/mobile` holds a touch- and remote-friendly interface. The desktop interface lives in `src/desktop`, shared frontend code in `src/core`.
+
+- **Live TV**: groups, search, favorites, recently watched and now-playing guide; a multi-column list or a compact logo grid for large playlists; full-screen player with channel up/down.
+- **Movies & Series**: poster grid, details, seasons and episodes, resume where you left off.
+- **Subscriptions**: M3U URL, an M3U file from the device, or a MAC portal.
+- **Android TV**: listed in the TV launcher; the remote's arrows move between items, OK selects, Channel +/− switches channels, Back closes the player.
+- Rotating a phone to landscape plays the video full screen.
+
+Android has its own version line and releases, tagged `android-vX.Y.Z`; each one carries `TuxPlayerX-android.apk`. To install it, download the APK on the device and allow installing apps from that source. On Android there is no VLC fallback: channels using formats the device cannot decode (some HEVC video or AC-3 audio) show a message.
+
+Building the APK locally needs Android Studio (SDK and NDK), JDK 21 and Windows Developer Mode, then `npx tauri android build --apk`. The `build-android.yml` workflow builds and signs it on GitHub from the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` secrets.
 
 ## Important playback note
 

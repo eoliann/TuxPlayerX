@@ -189,3 +189,9 @@ button:disabled {
   color: rgb(15 23 42);
   box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
 }
+
+/* Android: a clear focus ring for TV remotes (D-pad navigation); touch taps do not show it. */
+[data-mobile] :focus-visible {
+  outline: 3px solid #22d3ee;
+  outline-offset: 2px;
+}

@@ -1,0 +1,57 @@
+import { invoke } from '@tauri-apps/api/core';
+import {
+  Channel, ChannelLoadResult, EpgChannelKey, EpgGridItem, EpgNow, EpgProgram, ImportSummary, SeriesInfo, Subscription, SubscriptionInfo,
+  AppSettings, AppInfo, DirectStream, StreamHeaders, VodCategory, VodDetails, VodItem, VodKind, VodPage, VodPlayRequest,
+} from './types';
+
+export const api = {
+  appInfo: () => invoke<AppInfo>('app_info'),
+  currentPlatform: () => invoke<string>('current_platform'),
+  listSubscriptions: () => invoke<Subscription[]>('list_subscriptions'),
+  saveSubscription: (subscription: Subscription) => invoke<number>('save_subscription', { subscription }),
+  deleteSubscription: (id: number) => invoke<void>('delete_subscription', { id }),
+  setDefaultSubscription: (id: number) => invoke<void>('set_default_subscription', { id }),
+  getDefaultSubscription: () => invoke<Subscription | null>('get_default_subscription'),
+  refreshSubscriptionInfo: (id: number) => invoke<SubscriptionInfo>('refresh_subscription_info', { id }),
+  loadChannels: (id: number, force = false) => invoke<ChannelLoadResult>('load_channels', { id, force }),
+  loadEpgPrograms: (channel: Channel, force = false) => invoke<EpgProgram[]>('load_epg_programs', { channel, force }),
+  loadEpgNow: (channels: EpgChannelKey[]) => invoke<Record<string, EpgNow>>('load_epg_now', { channels }),
+  loadEpgGrid: (channels: EpgChannelKey[], from: number, to: number) =>
+    invoke<Record<string, EpgGridItem[]>>('load_epg_grid', { channels, from, to }),
+  resolveCatchupStream: (channel: Channel, start: number, stop: number) => invoke<string>('resolve_catchup_stream', { channel, start, stop }),
+  vodCategories: (subscriptionId: number, kind: VodKind) => invoke<VodCategory[]>('vod_categories', { subscriptionId, kind }),
+  vodItems: (subscriptionId: number, kind: VodKind, categoryId: string, page = 1, force = false) =>
+    invoke<VodPage>('vod_items', { subscriptionId, kind, categoryId, page, force }),
+  vodDetails: (subscriptionId: number, item: VodItem) => invoke<VodDetails>('vod_details', { subscriptionId, item }),
+  seriesInfo: (subscriptionId: number, item: VodItem) => invoke<SeriesInfo>('series_info', { subscriptionId, item }),
+  resolveVodStream: (subscriptionId: number, request: VodPlayRequest) => invoke<string>('resolve_vod_stream', { subscriptionId, request }),
+  listFavorites: (subscriptionId: number) => invoke<string[]>('list_favorites', { subscriptionId }),
+  toggleFavorite: (subscriptionId: number, channelId: string) => invoke<boolean>('toggle_favorite', { subscriptionId, channelId }),
+  listRecents: (subscriptionId: number) => invoke<string[]>('list_recents', { subscriptionId }),
+  recordRecent: (subscriptionId: number, channelId: string) => invoke<void>('record_recent', { subscriptionId, channelId }),
+  resolveChannelStream: (subscriptionId: number, channel: Channel) =>
+    invoke<string>('resolve_channel_stream', { subscriptionId, channel }),
+  getSettings: () => invoke<AppSettings>('get_settings'),
+  saveSettings: (settings: AppSettings) => invoke<void>('save_settings', { settings }),
+  openPipWindow: (url: string, title: string) => invoke<void>('open_pip_window', { url, title }),
+  closePipWindow: () => invoke<void>('close_pip_window'),
+  openExternalPlayer: (url: string, headers: StreamHeaders = {}) =>
+    invoke<void>('open_external_player', { url, userAgent: headers.userAgent ?? null, referrer: headers.referrer ?? null }),
+  openDetachedExternalPlayer: (url: string, headers: StreamHeaders = {}) =>
+    invoke<void>('open_detached_external_player', { url, userAgent: headers.userAgent ?? null, referrer: headers.referrer ?? null }),
+  startVlcBridge: (url: string, transcode = false, headers: StreamHeaders = {}) =>
+    invoke<string>('start_vlc_bridge', { url, transcode, userAgent: headers.userAgent ?? null, referrer: headers.referrer ?? null }),
+  prepareDirectStream: (url: string, headers: StreamHeaders = {}) =>
+    invoke<DirectStream>('prepare_direct_stream', { url, userAgent: headers.userAgent ?? null, referrer: headers.referrer ?? null }),
+  stopVlcBridge: () => invoke<void>('stop_vlc_bridge'),
+  stopExternalPlayer: () => invoke<void>('stop_external_player'),
+  shutdownPlayback: () => invoke<void>('shutdown_playback'),
+  openUrl: (url: string) => invoke<void>('open_url', { url }),
+  exportBackup: () => invoke<string>('export_backup'),
+  importPlaylistFile: (name: string, content: string) => invoke<string>('import_playlist_file', { name, content }),
+  importBackup: (content: string) => invoke<ImportSummary>('import_backup', { content }),
+};
+
+export function isTauriRuntime(): boolean {
+  return '__TAURI_INTERNALS__' in window;
+}
