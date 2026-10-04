@@ -110,6 +110,7 @@ export function MobileVodPlayer({ playback, onClose, onStatus }: Props) {
         src={playback.url}
         format={playback.format}
         compact
+        allowFullscreen={false}
         autoRestart={false}
         initialTime={initialTime}
         onProgress={(time, duration) => {

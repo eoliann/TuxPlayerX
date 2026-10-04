@@ -118,6 +118,11 @@ interface VideoSurfaceProps {
   format?: StreamFormat;
   /** Extra classes for the outer frame (the mobile player removes the rounded card look). */
   className?: string;
+  /**
+   * Offer the browser's fullscreen (controls button, double-click). The Android app turns this off:
+   * its WebView has no element fullscreen, and rotating the device already fills the screen.
+   */
+  allowFullscreen?: boolean;
 }
 
 export interface VideoSurfaceHandle {
@@ -136,7 +141,7 @@ export interface VideoSurfaceHandle {
 }
 
 export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(function VideoSurface(
-  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus, onUnsupported, onFailed, format, className },
+  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus, onUnsupported, onFailed, format, className, allowFullscreen = true },
   ref,
 ) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -724,11 +729,13 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
           ref={videoRef}
           className="h-full w-full bg-black object-contain"
           controls
+          controlsList={allowFullscreen ? undefined : 'nofullscreen noremoteplayback'}
           autoPlay={autoPlay}
           muted={muted}
           playsInline
           onClick={() => needsUserAction && tryPlay()}
           onDoubleClick={(event) => {
+            if (!allowFullscreen) return;
             event.preventDefault();
             event.stopPropagation();
             requestSmoothFullscreen().catch(() => undefined);

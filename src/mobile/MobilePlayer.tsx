@@ -215,6 +215,7 @@ export function MobilePlayer({
           src={src}
           format={format}
           compact
+          allowFullscreen={false}
           autoRestart={settings.autoRestart}
           onStatus={(message) => {
             if (!message.startsWith('Playback started')) onStatus(message);
