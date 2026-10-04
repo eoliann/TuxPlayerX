@@ -72,7 +72,29 @@ async fn read_source(source: &str) -> anyhow::Result<String> {
             .await?;
         Ok(text)
     } else {
-        Ok(std::fs::read_to_string(source)?)
+        let path = local_path(source);
+        let bytes = std::fs::read(&path).map_err(|e| anyhow::anyhow!("Could not read playlist file '{}': {e}", path.display()))?;
+        Ok(decode_text(bytes))
+    }
+}
+
+/// Accepts plain paths as well as `file://` URLs (as produced by drag & drop or copied from a browser).
+fn local_path(source: &str) -> std::path::PathBuf {
+    let trimmed = source.trim().trim_matches('"');
+    if trimmed.to_ascii_lowercase().starts_with("file:") {
+        if let Ok(path) = Url::parse(trimmed).and_then(|url| url.to_file_path().map_err(|_| url::ParseError::RelativeUrlWithoutBase)) {
+            return path;
+        }
+    }
+    std::path::PathBuf::from(trimmed)
+}
+
+/// Playlists are usually UTF-8 (sometimes with a BOM); older ones are Latin-1/Windows-1252, decoded byte by byte.
+fn decode_text(bytes: Vec<u8>) -> String {
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).map(<[u8]>::to_vec).unwrap_or(bytes);
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => e.into_bytes().iter().map(|&b| b as char).collect(),
     }
 }
 
@@ -207,6 +229,17 @@ fn extract_attr(line: &str, key: &str) -> Option<String> {
 
 async fn refresh_m3u_info(sub: &Subscription) -> anyhow::Result<SubscriptionInfo> {
     let source = sub.url.as_deref().ok_or_else(|| anyhow::anyhow!("Missing M3U URL"))?;
+    if !source.starts_with("http://") && !source.starts_with("https://") {
+        let path = local_path(source);
+        anyhow::ensure!(path.is_file(), "Playlist file not found: {}", path.display());
+        return Ok(SubscriptionInfo {
+            status: "Local file".to_string(),
+            expires_at: None,
+            active_connections: None,
+            max_connections: None,
+            message: Some("Local playlist files have no account information.".to_string()),
+        });
+    }
     let url = Url::parse(source)?;
     let username = sub.username.clone().or_else(|| query_value(&url, "username"));
     let password = sub.password.clone().or_else(|| query_value(&url, "password"));
@@ -1335,6 +1368,17 @@ mod tests {
 
     fn xmltv_time(dt: DateTime<Utc>) -> String {
         dt.format("%Y%m%d%H%M%S +0000").to_string()
+    }
+
+    #[test]
+    fn local_playlists_accept_file_urls_bom_and_latin1() {
+        assert_eq!(decode_text(b"\xEF\xBB\xBF#EXTM3U".to_vec()), "#EXTM3U");
+        assert_eq!(decode_text(b"#EXTINF:-1,Rom\xE2nia".to_vec()), "#EXTINF:-1,Rom\u{e2}nia");
+        assert_eq!(local_path("  \"list.m3u\" "), std::path::PathBuf::from("list.m3u"));
+        #[cfg(windows)]
+        assert_eq!(local_path("file:///C:/Lists/my%20list.m3u"), std::path::PathBuf::from("C:\\Lists\\my list.m3u"));
+        #[cfg(not(windows))]
+        assert_eq!(local_path("file:///home/me/my%20list.m3u"), std::path::PathBuf::from("/home/me/my list.m3u"));
     }
 
     #[test]

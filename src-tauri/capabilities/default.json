@@ -6,5 +6,8 @@
     "main",
     "pip-player"
   ],
-  "permissions": []
+  "permissions": [
+    "core:default",
+    "dialog:allow-open"
+  ]
 }

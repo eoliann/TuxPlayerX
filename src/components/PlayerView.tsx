@@ -43,6 +43,8 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [currentUrl, setCurrentUrl] = useState('');
   const [activeStreamUrl, setActiveStreamUrl] = useState('');
+  /** The stream currently fed through the VLC bridge, so it can be restarted with video transcoding if needed. */
+  const bridgeStreamRef = useRef<{ url: string; label: string; seq: number; transcoded: boolean } | null>(null);
   /** Where the stream runs when it is not in the embedded player. */
   const [playingElsewhere, setPlayingElsewhere] = useState<'vlc' | 'window' | null>(null);
   const [platform, setPlatform] = useState('web');
@@ -266,28 +268,51 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
     }
   };
 
-  /** Starts a resolved stream in the embedded player (through the VLC bridge on Windows). */
-  const startStream = async (url: string, seq: number, label: string) => {
+  /**
+   * Starts a resolved stream in the embedded player (through the VLC bridge on Windows).
+   * The bridge only remuxes by default; `transcode` re-encodes video for codecs the WebView cannot decode.
+   */
+  const startStream = async (url: string, seq: number, label: string, transcode = false) => {
     setActiveStreamUrl(url);
     setPlayingElsewhere(null);
+    bridgeStreamRef.current = null;
 
     let playbackUrl = url;
     let usedBridge = false;
 
     if (isWindowsRuntime) {
       try {
-        onStatus('Starting local VLC bridge for in-app playback...');
-        playbackUrl = await api.startVlcBridge(url);
+        onStatus(transcode ? `Converting ${label} for the built-in player...` : `Connecting to ${label}...`);
+        playbackUrl = await api.startVlcBridge(url, transcode);
         usedBridge = true;
       } catch (bridgeError) {
-        onStatus(`VLC bridge could not start. Trying direct WebView playback. ${String(bridgeError)}`);
+        if (seq !== playSeqRef.current) return false;
+        const message = String(bridgeError);
+        // Only fall back to direct playback when VLC itself is missing; an offline stream will not play there either.
+        if (!message.includes('Could not start VLC bridge')) {
+          setCurrentUrl('');
+          onStatus(message);
+          return false;
+        }
+        onStatus(`VLC bridge could not start. Trying direct WebView playback. ${message}`);
       }
       if (seq !== playSeqRef.current) return false;
     }
 
+    if (usedBridge) bridgeStreamRef.current = { url, label, seq, transcoded: transcode };
     setCurrentUrl(playbackUrl);
-    onStatus(usedBridge ? `Playing ${label} through local VLC bridge.` : `Playing ${label}.`);
+    onStatus(usedBridge ? `Playing ${label}${transcode ? ' (converted)' : ''}.` : `Playing ${label}.`);
     return true;
+  };
+
+  /** The embedded player cannot decode the current stream: restart the bridge with video transcoding once. */
+  const handleUnsupportedStream = () => {
+    const bridged = bridgeStreamRef.current;
+    if (!bridged || bridged.transcoded || bridged.seq !== playSeqRef.current) {
+      onStatus('This stream format is not supported by the built-in player. Try Open in VLC.');
+      return;
+    }
+    startStream(bridged.url, bridged.seq, bridged.label, true).catch((error) => onStatus(String(error)));
   };
 
   const beginPlayback = (channel: Channel) => {
@@ -659,7 +684,7 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
                 </div>
               </div>
             ) : (
-              <VideoSurface ref={videoSurfaceRef} src={currentUrl} title={currentChannel?.name} autoRestart={settings.autoRestart} onStatus={onStatus} />
+              <VideoSurface ref={videoSurfaceRef} src={currentUrl} title={currentChannel?.name} autoRestart={settings.autoRestart} onStatus={onStatus} onUnsupported={handleUnsupportedStream} />
             )}
           </div>
 

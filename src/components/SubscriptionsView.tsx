@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Info, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
+import { CheckCircle2, FolderOpen, Info, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { Subscription, SubscriptionType } from '../lib/types';
-import { api } from '../lib/api';
+import { api, isTauriRuntime } from '../lib/api';
 import { cn, daysUntilExpiry, EXPIRY_WARNING_DAYS, formatConnections, maskMac } from '../lib/utils';
 
 interface Props {
@@ -40,6 +41,26 @@ export function SubscriptionsView({ onChanged, onStatus }: Props) {
     if (!q) return subscriptions;
     return subscriptions.filter((sub) => `${sub.name} ${sub.type} ${sub.url || ''} ${sub.portalUrl || ''}`.toLowerCase().includes(q));
   }, [subscriptions, search]);
+
+  /** Lets the user pick a local .m3u/.m3u8 playlist; the name defaults to the file name. */
+  const pickPlaylistFile = async () => {
+    try {
+      const picked = await openFileDialog({
+        title: 'Choose an M3U playlist',
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: 'M3U playlists', extensions: ['m3u', 'm3u8', 'txt'] },
+          { name: 'All files', extensions: ['*'] },
+        ],
+      });
+      if (typeof picked !== 'string') return;
+      const fileName = picked.split(/[\\/]/).pop() || picked;
+      setForm((prev) => ({ ...prev, url: picked, name: prev.name.trim() ? prev.name : fileName.replace(/\.(m3u8?|txt)$/i, '') }));
+    } catch (error) {
+      onStatus(`Could not open the file picker. ${String(error)}`);
+    }
+  };
 
   const startAdd = (type: SubscriptionType) => {
     setEditing(null);
@@ -117,7 +138,14 @@ export function SubscriptionsView({ onChanged, onStatus }: Props) {
           {form.type === 'm3u' ? (
             <div className="space-y-3 rounded-3xl border border-cyan-400/20 bg-cyan-400/5 p-4">
               <label className="label">M3U URL or local file</label>
-              <input value={form.url || ''} onChange={(e) => setForm({ ...form, url: e.target.value })} className="field" placeholder="https://example.com/get.php?username=...&password=..." />
+              <div className="flex gap-2">
+                <input value={form.url || ''} onChange={(e) => setForm({ ...form, url: e.target.value })} className="field min-w-0 flex-1" placeholder="https://example.com/get.php?... or a local .m3u file" />
+                {isTauriRuntime() && (
+                  <button type="button" onClick={pickPlaylistFile} className="btn-secondary shrink-0" title="Choose a local .m3u / .m3u8 file">
+                    <FolderOpen size={15} /> Browse...
+                  </button>
+                )}
+              </div>
               <label className="label">Username (optional)</label>
               <input value={form.username || ''} onChange={(e) => setForm({ ...form, username: e.target.value })} className="field" />
               <label className="label">Password (optional)</label>

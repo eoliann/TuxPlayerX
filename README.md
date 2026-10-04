@@ -102,6 +102,8 @@ This Tauri version uses the system WebView video engine plus `hls.js` for HLS st
 
 Some IPTV streams that require VLC-specific demuxers/codecs may not play in the WebView. For those streams, use the **Open in VLC** fallback. A deeper embedded VLC backend can be added later, but it is more complex than the Python/PySide6 version.
 
+On Windows, in-app playback goes through a local VLC bridge. Since 2.0.6 the bridge only remuxes the video and converts the audio to AAC, which uses far less CPU than full re-encoding. Video is re-encoded to H.264 only when the built-in player reports a codec it cannot decode (for example HEVC or MPEG-2). The player reconnects automatically with increasing delays and stops after 5 failed attempts, so an offline channel does not keep using resources.
+
 ## Requirements
 
 ### Development
@@ -165,7 +167,7 @@ npm run tauri:build
 2. Click **Add subscription**.
 3. Select **M3U**.
 4. Enter a display name.
-5. Enter the M3U URL or local file path.
+5. Enter the M3U URL, or click **Browse...** to choose a local `.m3u` / `.m3u8` file (the name is filled in from the file name if empty). Local files are read again each time channels are reloaded, so edits to the file are picked up; UTF-8 and older Latin-1 playlists are both supported.
 6. Optional: add username and password if your provider requires them.
 7. Enable **Use as default** if needed.
 8. Save the subscription.
