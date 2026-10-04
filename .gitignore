@@ -12,3 +12,6 @@ src-tauri/gen/*
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Android Studio project settings (local)
+.idea/
