@@ -7,9 +7,9 @@ import { SubscriptionsView } from './components/SubscriptionsView';
 import { SettingsView } from './components/SettingsView';
 import { AboutView } from './components/AboutView';
 import { VodView } from './components/VodView';
-import { AppSettings, Subscription } from './lib/types';
-import { daysUntilExpiry, EXPIRY_WARNING_DAYS } from './lib/utils';
-import { api } from './lib/api';
+import { AppSettings, Subscription } from '../core/types';
+import { daysUntilExpiry, EXPIRY_WARNING_DAYS } from '../core/utils';
+import { api } from '../core/api';
 
 const defaultSettings: AppSettings = {
   theme: 'dark',

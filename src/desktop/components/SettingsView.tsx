@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Download, FolderOpen, Moon, Save, Sun, Upload } from 'lucide-react';
-import { AppSettings } from '../lib/types';
-import { api } from '../lib/api';
+import { AppSettings } from '../../core/types';
+import { api } from '../../core/api';
 
 interface Props {
   settings: AppSettings;

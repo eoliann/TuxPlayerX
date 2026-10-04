@@ -1,6 +1,6 @@
 import { Clapperboard, MonitorPlay, ListVideo, Settings, Info, Moon, Sun } from 'lucide-react';
-import { cn } from '../lib/utils';
-import { APP_NAME, APP_VERSION } from '../lib/appMeta';
+import { cn } from '../../core/utils';
+import { APP_NAME, APP_VERSION } from '../../core/appMeta';
 
 export type TabKey = 'player' | 'vod' | 'subscriptions' | 'settings' | 'about';
 

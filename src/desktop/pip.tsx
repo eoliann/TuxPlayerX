@@ -3,8 +3,8 @@ import ReactDOM from 'react-dom/client';
 import Hls from 'hls.js';
 import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
-import './styles/globals.css';
-import { loadMpegts, MPEGTS_LIVE_CONFIG, streamFormat } from './lib/stream';
+import '../styles/globals.css';
+import { loadMpegts, MPEGTS_LIVE_CONFIG, streamFormat } from '../core/stream';
 
 declare global {
   interface Window {

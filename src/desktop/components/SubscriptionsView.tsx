@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { CheckCircle2, FolderOpen, Info, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
-import { Subscription, SubscriptionType } from '../lib/types';
-import { api, isTauriRuntime } from '../lib/api';
-import { cn, daysUntilExpiry, EXPIRY_WARNING_DAYS, formatConnections, maskMac } from '../lib/utils';
+import { Subscription, SubscriptionType } from '../../core/types';
+import { api, isTauriRuntime } from '../../core/api';
+import { cn, daysUntilExpiry, EXPIRY_WARNING_DAYS, formatConnections, maskMac } from '../../core/utils';
 
 interface Props {
   onChanged: () => void;

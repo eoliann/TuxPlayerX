@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { ExternalLink, Github, ShieldCheck } from 'lucide-react';
-import { AppInfo } from '../lib/types';
-import { api } from '../lib/api';
-import { APP_NAME, APP_VERSION } from '../lib/appMeta';
+import { AppInfo } from '../../core/types';
+import { api } from '../../core/api';
+import { APP_NAME, APP_VERSION } from '../../core/appMeta';
 
 interface Props {
   onStatus: (status: string) => void;

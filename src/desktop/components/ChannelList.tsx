@@ -1,7 +1,7 @@
 import { forwardRef, memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import { Star } from 'lucide-react';
-import { Channel, EpgNow } from '../lib/types';
-import { cn } from '../lib/utils';
+import { Channel, EpgNow } from '../../core/types';
+import { cn } from '../../core/utils';
 
 // Fixed row height (including the gap below each row) lets the list render only the visible rows,
 // which keeps scrolling and searching smooth even with tens of thousands of channels.

@@ -1,8 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
 import Hls from 'hls.js';
 import { AudioLines, Captions, Check, Play, RotateCw, TriangleAlert } from 'lucide-react';
-import { cn } from '../lib/utils';
-import { loadMpegts, MPEGTS_LIVE_CONFIG, streamFormat, type StreamFormat } from '../lib/stream';
+import { cn } from '../utils';
+import { loadMpegts, MPEGTS_LIVE_CONFIG, streamFormat, type StreamFormat } from '../stream';
 
 // Live-TV oriented hls.js settings, shared by the initial load and the auto-restart path.
 const HLS_CONFIG: Partial<Hls['config']> = {

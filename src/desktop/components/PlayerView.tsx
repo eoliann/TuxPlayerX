@@ -1,12 +1,12 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, ExternalLink, History, Keyboard, LayoutGrid, Maximize2, Play, Radio, RefreshCw, Search } from 'lucide-react';
-import { Channel, EpgGridItem, EpgNow, EpgProgram, AppSettings, StreamHeaders, Subscription } from '../lib/types';
-import type { StreamFormat } from '../lib/stream';
-import { api, isTauriRuntime } from '../lib/api';
-import { VideoSurface, VideoSurfaceHandle } from './VideoSurface';
+import { Channel, EpgGridItem, EpgNow, EpgProgram, AppSettings, StreamHeaders, Subscription } from '../../core/types';
+import type { StreamFormat } from '../../core/stream';
+import { api, isTauriRuntime } from '../../core/api';
+import { VideoSurface, VideoSurfaceHandle } from '../../core/components/VideoSurface';
 import { ChannelList, ChannelListHandle } from './ChannelList';
 import { EpgGrid } from './EpgGrid';
-import { cn, isCatchupAvailable } from '../lib/utils';
+import { cn, isCatchupAvailable } from '../../core/utils';
 
 interface PlayerViewProps {
   settings: AppSettings;

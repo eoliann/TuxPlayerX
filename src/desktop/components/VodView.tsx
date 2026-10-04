@@ -1,9 +1,9 @@
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, Clapperboard, ExternalLink, Film, Play, RefreshCw, Search, Star, Tv, X } from 'lucide-react';
-import { SeriesEpisode, SeriesInfo, Subscription, VodCategory, VodDetails, VodItem, VodKind, VodPlayRequest } from '../lib/types';
-import { api } from '../lib/api';
-import { cn } from '../lib/utils';
-import { VideoSurface } from './VideoSurface';
+import { SeriesEpisode, SeriesInfo, Subscription, VodCategory, VodDetails, VodItem, VodKind, VodPlayRequest } from '../../core/types';
+import { api } from '../../core/api';
+import { cn } from '../../core/utils';
+import { VideoSurface } from '../../core/components/VideoSurface';
 
 interface VodViewProps {
   reloadToken: number;

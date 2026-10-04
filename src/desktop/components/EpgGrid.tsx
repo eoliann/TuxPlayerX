@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, History, Play, RefreshCw, X } from 'lucide-react';
-import { Channel, EpgGridItem } from '../lib/types';
-import { api } from '../lib/api';
-import { cn, isCatchupAvailable } from '../lib/utils';
+import { Channel, EpgGridItem } from '../../core/types';
+import { api } from '../../core/api';
+import { cn, isCatchupAvailable } from '../../core/utils';
 
 const ROW_HEIGHT = 52;
 const HEADER_HEIGHT = 36;
