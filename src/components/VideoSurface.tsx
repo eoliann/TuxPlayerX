@@ -6,24 +6,45 @@ import { cn } from '../lib/utils';
 // Live-TV oriented hls.js settings, shared by the initial load and the auto-restart path.
 const HLS_CONFIG: Partial<Hls['config']> = {
   lowLatencyMode: false,
-  backBufferLength: 90,
+  backBufferLength: 10,
   maxBufferLength: 30,
   maxMaxBufferLength: 60,
   maxBufferHole: 0.5,
   liveSyncDurationCount: 3,
   liveMaxLatencyDurationCount: 8,
   liveDurationInfinity: true,
-  manifestLoadingMaxRetry: 12,
+  manifestLoadingMaxRetry: 4,
   manifestLoadingRetryDelay: 1000,
-  manifestLoadingMaxRetryTimeout: 30000,
-  fragLoadingMaxRetry: 12,
+  manifestLoadingMaxRetryTimeout: 8000,
+  fragLoadingMaxRetry: 6,
   fragLoadingRetryDelay: 1000,
   fragLoadingMaxRetryTimeout: 30000,
-  levelLoadingMaxRetry: 12,
+  levelLoadingMaxRetry: 6,
   levelLoadingRetryDelay: 1000,
   enableWorker: true,
   startFragPrefetch: true,
 };
+
+/** Full reloads attempted before giving up on a stream. */
+const MAX_RESTARTS = 5;
+/** Playback that runs this long after a restart counts as recovered and resets the attempt counter. */
+const HEALTHY_PLAYBACK_MS = 30_000;
+
+const MANIFEST_ERRORS = new Set<string>([
+  Hls.ErrorDetails.MANIFEST_LOAD_ERROR,
+  Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT,
+  Hls.ErrorDetails.MANIFEST_PARSING_ERROR,
+]);
+
+const CODEC_ERRORS = new Set<string>([
+  Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR,
+  Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR,
+  Hls.ErrorDetails.BUFFER_ADD_CODEC_ERROR,
+]);
+
+function isHlsUrl(url: string): boolean {
+  return url.toLowerCase().includes('m3u8');
+}
 
 interface MediaTrack {
   index: number;
@@ -89,6 +110,8 @@ interface VideoSurfaceProps {
   /** Called about every 5 seconds during playback with the position and duration in seconds. */
   onProgress?: (time: number, duration: number) => void;
   onStatus?: (status: string) => void;
+  /** Called when the WebView cannot decode the stream (e.g. HEVC); the parent may switch to a transcoded source. */
+  onUnsupported?: () => void;
 }
 
 export interface VideoSurfaceHandle {
@@ -103,7 +126,7 @@ export interface VideoSurfaceHandle {
 }
 
 export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(function VideoSurface(
-  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus },
+  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus, onUnsupported },
   ref,
 ) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -111,6 +134,15 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
   const hlsRef = useRef<Hls | null>(null);
   const fullscreenLockRef = useRef(false);
   const [restartCount, setRestartCount] = useState(0);
+  const restartAttemptsRef = useRef(0);
+  const lastRestartAtRef = useRef(0);
+  // Callbacks and flags read from long-lived event handlers, kept current without re-creating the player.
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
+  const onUnsupportedRef = useRef(onUnsupported);
+  onUnsupportedRef.current = onUnsupported;
+  const autoRestartRef = useRef(autoRestart);
+  autoRestartRef.current = autoRestart;
   const [needsUserAction, setNeedsUserAction] = useState(false);
   const [playbackError, setPlaybackError] = useState('');
   const [audioTracks, setAudioTracks] = useState<MediaTrack[]>([]);
@@ -385,12 +417,88 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src ? 'video' : 'empty']);
 
+  /** Creates the hls.js instance (or sets a plain source) for `url` and wires recovery handling. */
+  const attachSource = (video: HTMLVideoElement, url: string) => {
+    if (!isHlsUrl(url) || !Hls.isSupported()) {
+      video.src = url;
+      return;
+    }
+    const hls = new Hls(HLS_CONFIG);
+    hlsRef.current = hls;
+    watchHlsTracks(hls);
+    let networkRecoveries = 0;
+    let mediaRecoveries = 0;
+    hls.on(Hls.Events.FRAG_LOADED, () => {
+      networkRecoveries = 0;
+    });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (!data.fatal || hlsRef.current !== hls) return;
+      onStatusRef.current?.(`Playback issue: ${data.details}`);
+
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        // Without a loaded manifest startLoad() has nothing to resume, so the source must be reloaded.
+        if (!MANIFEST_ERRORS.has(data.details) && networkRecoveries < 3) {
+          networkRecoveries += 1;
+          window.setTimeout(() => hlsRef.current === hls && hls.startLoad(), 1000 * networkRecoveries);
+          return;
+        }
+        requestRestart(`Playback issue: ${data.details}`);
+        return;
+      }
+
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        if (!CODEC_ERRORS.has(data.details) && mediaRecoveries < 2) {
+          if (mediaRecoveries === 1) hls.swapAudioCodec();
+          mediaRecoveries += 1;
+          hls.recoverMediaError();
+          return;
+        }
+        reportUnsupported(`Playback issue: ${data.details}`);
+        return;
+      }
+
+      requestRestart(`Playback issue: ${data.details}`);
+    });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+  };
+
+  /** Schedules a full reload of the stream, with exponential backoff and a cap on attempts. */
+  const requestRestart = (reason: string) => {
+    if (!autoRestartRef.current) {
+      setPlaybackError(reason);
+      return;
+    }
+    if (restartAttemptsRef.current >= MAX_RESTARTS) {
+      destroyHls();
+      videoRef.current?.pause();
+      setPlaybackError(`${reason}. The stream did not recover after ${MAX_RESTARTS} attempts; the channel may be offline. Press Reload to try again or use Open in VLC.`);
+      onStatusRef.current?.('Stream unavailable, automatic restarts stopped.');
+      return;
+    }
+    restartAttemptsRef.current += 1;
+    setRestartCount((value) => value + 1);
+  };
+
+  /** The WebView cannot decode this stream; let the parent switch to a transcoded source if it can. */
+  const reportUnsupported = (reason: string) => {
+    destroyHls();
+    if (onUnsupportedRef.current) {
+      onStatusRef.current?.('Stream format is not supported by the built-in player, converting it...');
+      onUnsupportedRef.current();
+      return;
+    }
+    setPlaybackError(`${reason}. This stream format is not supported by the built-in player. Try Open in VLC.`);
+  };
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     destroyHls();
     setRestartCount(0);
+    restartAttemptsRef.current = 0;
+    lastRestartAtRef.current = Date.now();
     setNeedsUserAction(false);
     setPlaybackError('');
     setAudioTracks([]);
@@ -409,39 +517,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
     video.volume = Math.min(1, Math.max(0, prefs.volume));
     video.muted = prefs.muted;
 
-    const lower = src.toLowerCase();
-    const isHls = lower.includes('.m3u8') || lower.includes('m3u8');
-
-    if (isHls && Hls.isSupported()) {
-      const hls = new Hls(HLS_CONFIG);
-      hlsRef.current = hls;
-      watchHlsTracks(hls);
-      hls.loadSource(src);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal) return;
-        const issue = `Playback issue: ${data.details}`;
-        onStatus?.(issue);
-        // Attempt HLS-level recovery before full restart
-        switch (data.type) {
-          case Hls.ErrorTypes.NETWORK_ERROR:
-            hls.startLoad();
-            return;
-          case Hls.ErrorTypes.MEDIA_ERROR:
-            hls.recoverMediaError();
-            return;
-          default:
-            break;
-        }
-        // Only trigger full restart if HLS recovery can't help
-        setPlaybackError(issue);
-        if (autoRestart) {
-          setRestartCount((value) => value + 1);
-        }
-      });
-    } else {
-      video.src = src;
-    }
+    attachSource(video, src);
 
     if (autoPlay) {
       window.setTimeout(() => {
@@ -458,38 +534,31 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       destroyHls();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, autoPlay, autoRestart]);
+  }, [src, autoPlay]);
 
   useEffect(() => {
     if (!restartCount || !src) return;
     const video = videoRef.current;
     if (!video) return;
+    const attempt = restartAttemptsRef.current;
+    const delay = Math.min(1000 * 2 ** (attempt - 1), 15000);
+    onStatusRef.current?.(`Reconnecting (attempt ${attempt}/${MAX_RESTARTS})...`);
     const timer = window.setTimeout(() => {
-      onStatus?.('Restarting stalled stream...');
-      const current = src;
       destroyHls();
       video.pause();
       video.removeAttribute('src');
       video.load();
-      window.setTimeout(() => {
-        if (current.toLowerCase().includes('.m3u8') && Hls.isSupported()) {
-          const hls = new Hls(HLS_CONFIG);
-          hlsRef.current = hls;
-          watchHlsTracks(hls);
-          hls.loadSource(current);
-          hls.attachMedia(video);
-        } else {
-          video.src = current;
-        }
-        tryPlay().catch(() => undefined);
-      }, 250);
-    }, 900);
+      lastRestartAtRef.current = Date.now();
+      attachSource(video, src);
+      tryPlay().catch(() => undefined);
+    }, delay);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restartCount, src, onStatus]);
+  }, [restartCount, src]);
 
   // Smart stall watchdog: only restart after sustained playback stall,
   // NOT on transient buffering events (which are normal in HLS).
+  const hasVideo = Boolean(src);
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !autoRestart) return;
@@ -505,6 +574,8 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       if (video.currentTime !== lastTime) {
         lastTime = video.currentTime;
         stalledSince = 0;
+        // After a while of healthy playback, later failures get a fresh set of restart attempts.
+        if (restartAttemptsRef.current && now - lastRestartAtRef.current > HEALTHY_PLAYBACK_MS) restartAttemptsRef.current = 0;
         return;
       }
       // Time hasn't changed — track how long
@@ -515,16 +586,21 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       if (now - stalledSince > STALL_THRESHOLD_MS) {
         stalledSince = 0;
         lastTime = -1;
-        onStatus?.('Stream stalled for too long, restarting...');
-        setRestartCount((value) => value + 1);
+        onStatusRef.current?.('Stream stalled for too long, restarting...');
+        requestRestart('Stream stalled');
       }
     }, 2000);
 
-    const onEnded = () => setRestartCount((value) => value + 1);
+    const onEnded = () => requestRestart('Stream ended');
     const onError = () => {
-      setPlaybackError('The embedded WebView player could not play this stream. If the same channel works in VLC, use Open in VLC or the local VLC bridge.');
+      // hls.js reports its own errors; this only covers sources played natively by the video element.
+      if (hlsRef.current || !video.getAttribute('src')) return;
       setNeedsUserAction(false);
-      setRestartCount((value) => value + 1);
+      if (video.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || video.error?.code === MediaError.MEDIA_ERR_DECODE) {
+        reportUnsupported('The embedded WebView player could not decode this stream');
+        return;
+      }
+      requestRestart('The embedded WebView player lost the stream');
     };
     video.addEventListener('ended', onEnded);
     video.addEventListener('error', onError);
@@ -533,7 +609,8 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       video.removeEventListener('ended', onEnded);
       video.removeEventListener('error', onError);
     };
-  }, [autoRestart]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRestart, hasVideo]);
 
   const userActionOverlay = src && needsUserAction;
   const errorOverlay = src && playbackError && !needsUserAction;

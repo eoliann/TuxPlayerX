@@ -13,9 +13,9 @@ use std::process::{Child, Command};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use db::Database;
 use models::{AppInfo, AppSettings, BackupFile, Channel, ChannelLoadResult, EpgChannelKey, EpgGridItem, EpgNow, EpgProgram, ImportSummary, SeriesInfo, Subscription, SubscriptionInfo, VodCategory, VodDetails, VodItem, VodPage, VodPlayRequest};
@@ -30,6 +30,7 @@ struct VlcBridge {
     child: Child,
     stop_flag: Arc<AtomicBool>,
     work_dir: PathBuf,
+    generation: u64,
 }
 
 struct AppState {
@@ -98,50 +99,73 @@ fn content_type_for(path: &str) -> &'static str {
     else { "application/octet-stream" }
 }
 
+fn serve_bridge_file(mut stream: std::net::TcpStream, root: &std::path::Path) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut buffer = [0_u8; 2048];
+    let read = stream.read(&mut buffer).unwrap_or(0);
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let mut path = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/stream.m3u8")
+        .split('?')
+        .next()
+        .unwrap_or("/stream.m3u8")
+        .trim_start_matches('/')
+        .to_string();
+
+    if path.is_empty() { path = "stream.m3u8".to_string(); }
+    if path.contains("..") { path = "stream.m3u8".to_string(); }
+
+    match fs::read(root.join(&path)) {
+        Ok(bytes) => {
+            let headers = format!(
+                "HTTP/1.1 200 OK
+Content-Type: {}
+Content-Length: {}
+Access-Control-Allow-Origin: *
+Cache-Control: no-cache, no-store, must-revalidate
+Pragma: no-cache
+Connection: close
+
+",
+                content_type_for(&path),
+                bytes.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.write_all(&bytes);
+        }
+        Err(_) => {
+            let body = b"Not ready";
+            let headers = format!(
+                "HTTP/1.1 404 Not Found
+Content-Type: text/plain
+Content-Length: {}
+Access-Control-Allow-Origin: *
+Cache-Control: no-cache
+Connection: close
+
+",
+                body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.write_all(body);
+        }
+    }
+}
+
 fn start_static_hls_server(listener: TcpListener, root: PathBuf, stop_flag: Arc<AtomicBool>) {
     let _ = listener.set_nonblocking(true);
+    let root = Arc::new(root);
     thread::spawn(move || {
         while !stop_flag.load(Ordering::Relaxed) {
             match listener.accept() {
-                Ok((mut stream, _addr)) => {
-                    let mut buffer = [0_u8; 2048];
-                    let read = stream.read(&mut buffer).unwrap_or(0);
-                    let request = String::from_utf8_lossy(&buffer[..read]);
-                    let mut path = request
-                        .lines()
-                        .next()
-                        .and_then(|line| line.split_whitespace().nth(1))
-                        .unwrap_or("/stream.m3u8")
-                        .split('?')
-                        .next()
-                        .unwrap_or("/stream.m3u8")
-                        .trim_start_matches('/')
-                        .to_string();
-
-                    if path.is_empty() { path = "stream.m3u8".to_string(); }
-                    if path.contains("..") { path = "stream.m3u8".to_string(); }
-
-                    let file_path = root.join(&path);
-                    match fs::read(&file_path) {
-                        Ok(bytes) => {
-                            let headers = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nConnection: close\r\n\r\n",
-                                content_type_for(&path),
-                                bytes.len()
-                            );
-                            let _ = stream.write_all(headers.as_bytes());
-                            let _ = stream.write_all(&bytes);
-                        }
-                        Err(_) => {
-                            let body = b"Not ready";
-                            let headers = format!(
-                                "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-                                body.len()
-                            );
-                            let _ = stream.write_all(headers.as_bytes());
-                            let _ = stream.write_all(body);
-                        }
-                    }
+                Ok((stream, _addr)) => {
+                    // One short-lived thread per request so a slow segment download never blocks the playlist.
+                    let _ = stream.set_nonblocking(false);
+                    let root = Arc::clone(&root);
+                    thread::spawn(move || serve_bridge_file(stream, &root));
                 }
                 Err(_) => thread::sleep(Duration::from_millis(50)),
             }
@@ -253,9 +277,26 @@ fn stop_vlc_bridge(state: State<AppState>) -> Result<(), String> {
     stop_vlc_bridge_internal(&state)
 }
 
+/// How long the bridge may take to produce the first HLS segment before playback is reported as failed.
+const VLC_BRIDGE_READY_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// Each bridge gets a generation number so a start request that was superseded (fast zapping) can tell.
+static VLC_BRIDGE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Returns true when the bridge playlist exists and already lists at least one segment.
+fn bridge_playlist_ready(index_path: &std::path::Path) -> bool {
+    fs::read_to_string(index_path).map(|text| text.contains("#EXTINF")).unwrap_or(false)
+}
+
+/// Starts VLC as a local HLS segmenter for the embedded player.
+/// By default the video is only remuxed (no re-encoding) and just the audio is converted to AAC,
+/// which keeps CPU usage low. `transcode = true` also re-encodes video to H.264 for codecs the
+/// WebView cannot decode (HEVC, MPEG-2, ...).
 #[tauri::command]
-fn start_vlc_bridge(state: State<AppState>, url: String) -> Result<String, String> {
+async fn start_vlc_bridge(state: State<'_, AppState>, url: String, transcode: Option<bool>) -> Result<String, String> {
     stop_vlc_bridge_internal(&state)?;
+    let generation = VLC_BRIDGE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let transcode = transcode.unwrap_or(false);
 
     let settings = state.db.lock().map_err(err)?.get_settings().map_err(err)?;
     let (mut cmd, label) = build_external_player_command(&settings.external_player_command);
@@ -286,8 +327,13 @@ fn start_vlc_bridge(state: State<AppState>, url: String) -> Result<String, Strin
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
+    let (codecs, seglen) = if transcode {
+        ("vcodec=h264,venc=x264{preset=veryfast,tune=zerolatency},vb=2500,acodec=mp4a,ab=160,channels=2,samplerate=48000,scodec=none", 4)
+    } else {
+        ("acodec=mp4a,ab=160,channels=2,samplerate=48000,scodec=none", 2)
+    };
     let sout = format!(
-        "#transcode{{vcodec=h264,vb=2500,acodec=mp4a,ab=192,channels=2,samplerate=44100,scodec=none}}:std{{access=livehttp{{seglen=6,delsegs=true,numsegs=15,index={index},index-url={index_url}}},mux=ts{{use-key-frames}},dst={segment}}}"
+        "#transcode{{{codecs}}}:std{{access=livehttp{{seglen={seglen},delsegs=true,numsegs=10,index={index},index-url={index_url}}},mux=ts{{use-key-frames}},dst={segment}}}"
     );
 
     cmd.arg("-I")
@@ -312,29 +358,46 @@ fn start_vlc_bridge(state: State<AppState>, url: String) -> Result<String, Strin
 
     {
         let mut bridge = state.vlc_bridge.lock().map_err(err)?;
-        *bridge = Some(VlcBridge { child, stop_flag, work_dir });
+        *bridge = Some(VlcBridge { child, stop_flag, work_dir, generation });
     }
 
-    for _ in 0..120 {
-        if index_path.exists() && fs::metadata(&index_path).map(|m| m.len() > 0).unwrap_or(false) {
-            return Ok(playback_url);
-        }
+    // Poll without blocking the UI thread until VLC has written a playlist with at least one segment.
+    let deadline = Instant::now() + VLC_BRIDGE_READY_TIMEOUT;
+    loop {
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         {
             let mut bridge = state.vlc_bridge.lock().map_err(err)?;
-            if let Some(running) = bridge.as_mut() {
-                if let Ok(Some(status)) = running.child.try_wait() {
-                    let _ = fs::remove_dir_all(&running.work_dir);
-                    *bridge = None;
-                    return Err(format!("VLC bridge stopped before producing a playable stream. Exit status: {status}"));
+            match bridge.as_mut() {
+                Some(running) if running.generation == generation => {
+                    if let Ok(Some(status)) = running.child.try_wait() {
+                        if let Some(stopped) = bridge.take() {
+                            stopped.stop_flag.store(true, Ordering::Relaxed);
+                            let _ = fs::remove_dir_all(&stopped.work_dir);
+                        }
+                        return Err(format!("VLC bridge stopped before producing a playable stream (exit status: {status}). The channel may be offline."));
+                    }
                 }
+                // Another channel was started or playback was stopped meanwhile.
+                _ => return Err("Playback request was replaced by a newer one.".to_string()),
             }
         }
 
-        thread::sleep(Duration::from_millis(100));
-    }
+        if bridge_playlist_ready(&index_path) {
+            return Ok(playback_url);
+        }
 
-    Ok(playback_url)
+        if Instant::now() >= deadline {
+            let still_current = state.vlc_bridge.lock().map_err(err)?.as_ref().map(|running| running.generation) == Some(generation);
+            if still_current {
+                stop_vlc_bridge_internal(&state)?;
+            }
+            return Err(format!(
+                "The channel did not start within {} seconds. The server may be offline or overloaded.",
+                VLC_BRIDGE_READY_TIMEOUT.as_secs()
+            ));
+        }
+    }
 }
 
 #[tauri::command]

@@ -102,6 +102,8 @@ This Tauri version uses the system WebView video engine plus `hls.js` for HLS st
 
 Some IPTV streams that require VLC-specific demuxers/codecs may not play in the WebView. For those streams, use the **Open in VLC** fallback. A deeper embedded VLC backend can be added later, but it is more complex than the Python/PySide6 version.
 
+On Windows, in-app playback goes through a local VLC bridge. Since 2.0.6 the bridge only remuxes the video and converts the audio to AAC, which uses far less CPU than full re-encoding. Video is re-encoded to H.264 only when the built-in player reports a codec it cannot decode (for example HEVC or MPEG-2). The player reconnects automatically with increasing delays and stops after 5 failed attempts, so an offline channel does not keep using resources.
+
 ## Requirements
 
 ### Development

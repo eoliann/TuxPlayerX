@@ -37,7 +37,7 @@ export const api = {
   closePipWindow: () => invoke<void>('close_pip_window'),
   openExternalPlayer: (url: string) => invoke<void>('open_external_player', { url }),
   openDetachedExternalPlayer: (url: string) => invoke<void>('open_detached_external_player', { url }),
-  startVlcBridge: (url: string) => invoke<string>('start_vlc_bridge', { url }),
+  startVlcBridge: (url: string, transcode = false) => invoke<string>('start_vlc_bridge', { url, transcode }),
   stopVlcBridge: () => invoke<void>('stop_vlc_bridge'),
   stopExternalPlayer: () => invoke<void>('stop_external_player'),
   shutdownPlayback: () => invoke<void>('shutdown_playback'),
