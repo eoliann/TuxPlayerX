@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type Reac
 import Hls from 'hls.js';
 import { AudioLines, Captions, Check, Play, RotateCw, TriangleAlert } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { loadMpegts, MPEGTS_LIVE_CONFIG, streamFormat, type StreamFormat } from '../lib/stream';
 
 // Live-TV oriented hls.js settings, shared by the initial load and the auto-restart path.
 const HLS_CONFIG: Partial<Hls['config']> = {
@@ -41,10 +42,6 @@ const CODEC_ERRORS = new Set<string>([
   Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR,
   Hls.ErrorDetails.BUFFER_ADD_CODEC_ERROR,
 ]);
-
-function isHlsUrl(url: string): boolean {
-  return url.toLowerCase().includes('m3u8');
-}
 
 interface MediaTrack {
   index: number;
@@ -112,6 +109,13 @@ interface VideoSurfaceProps {
   onStatus?: (status: string) => void;
   /** Called when the WebView cannot decode the stream (e.g. HEVC); the parent may switch to a transcoded source. */
   onUnsupported?: () => void;
+  /**
+   * Called instead of the automatic restarts when the stream fails before it ever played,
+   * so the parent can try another way (for example the VLC bridge).
+   */
+  onFailed?: (reason: string) => void;
+  /** Playback engine; detected from the URL when omitted. */
+  format?: StreamFormat;
 }
 
 export interface VideoSurfaceHandle {
@@ -126,12 +130,17 @@ export interface VideoSurfaceHandle {
 }
 
 export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(function VideoSurface(
-  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus, onUnsupported },
+  { src, title, autoPlay = true, muted = false, compact = false, autoRestart = true, initialTime, onProgress, onStatus, onUnsupported, onFailed, format },
   ref,
 ) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const mpegtsRef = useRef<{ destroy: () => void } | null>(null);
+  /** Bumped whenever the engines are torn down, so a pending asynchronous attach knows it is stale. */
+  const engineGenerationRef = useRef(0);
+  /** True once the current source has actually played; failures after that are handled by restarts. */
+  const hasPlayedRef = useRef(false);
   const fullscreenLockRef = useRef(false);
   const [restartCount, setRestartCount] = useState(0);
   const restartAttemptsRef = useRef(0);
@@ -141,8 +150,14 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
   onStatusRef.current = onStatus;
   const onUnsupportedRef = useRef(onUnsupported);
   onUnsupportedRef.current = onUnsupported;
+  const onFailedRef = useRef(onFailed);
+  onFailedRef.current = onFailed;
+  const formatRef = useRef(format);
+  formatRef.current = format;
   const autoRestartRef = useRef(autoRestart);
   autoRestartRef.current = autoRestart;
+  const autoPlayRef = useRef(autoPlay);
+  autoPlayRef.current = autoPlay;
   const [needsUserAction, setNeedsUserAction] = useState(false);
   const [playbackError, setPlaybackError] = useState('');
   const [audioTracks, setAudioTracks] = useState<MediaTrack[]>([]);
@@ -241,8 +256,15 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
   };
 
   const destroyHls = () => {
+    engineGenerationRef.current += 1;
     hlsRef.current?.destroy();
     hlsRef.current = null;
+    try {
+      mpegtsRef.current?.destroy();
+    } catch {
+      // The player may already be torn down.
+    }
+    mpegtsRef.current = null;
   };
 
   const stopPlayback = () => {
@@ -417,11 +439,19 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src ? 'video' : 'empty']);
 
-  /** Creates the hls.js instance (or sets a plain source) for `url` and wires recovery handling. */
-  const attachSource = (video: HTMLVideoElement, url: string) => {
-    if (!isHlsUrl(url) || !Hls.isSupported()) {
+  /**
+   * Creates the playback engine for `url` and wires recovery handling.
+   * Returns true when the engine starts playback itself (mpegts.js attaches asynchronously).
+   */
+  const attachSource = (video: HTMLVideoElement, url: string): boolean => {
+    const kind = formatRef.current ?? streamFormat(url);
+    if (kind === 'mpegts') {
+      attachMpegts(video, url);
+      return true;
+    }
+    if (kind !== 'hls' || !Hls.isSupported()) {
       video.src = url;
-      return;
+      return false;
     }
     const hls = new Hls(HLS_CONFIG);
     hlsRef.current = hls;
@@ -442,7 +472,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
           window.setTimeout(() => hlsRef.current === hls && hls.startLoad(), 1000 * networkRecoveries);
           return;
         }
-        requestRestart(`Playback issue: ${data.details}`);
+        handleFatal(`Playback issue: ${data.details}`);
         return;
       }
 
@@ -457,10 +487,49 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
         return;
       }
 
-      requestRestart(`Playback issue: ${data.details}`);
+      handleFatal(`Playback issue: ${data.details}`);
     });
     hls.loadSource(url);
     hls.attachMedia(video);
+    return false;
+  };
+
+  /** Live MPEG-TS (most Xtream channels) through mpegts.js, which only repackages the stream for the WebView. */
+  const attachMpegts = (video: HTMLVideoElement, url: string) => {
+    const generation = engineGenerationRef.current;
+    loadMpegts()
+      .then((mpegts) => {
+        if (generation !== engineGenerationRef.current) return;
+        if (!mpegts.isSupported()) {
+          reportUnsupported('This WebView cannot play MPEG-TS streams');
+          return;
+        }
+        const player = mpegts.createPlayer({ type: 'mpegts', isLive: true, url }, MPEGTS_LIVE_CONFIG);
+        mpegtsRef.current = player;
+        player.on(mpegts.Events.ERROR, (type: string, details: string) => {
+          if (mpegtsRef.current !== player) return;
+          onStatusRef.current?.(`Playback issue: ${details}`);
+          if (type === mpegts.ErrorTypes.MEDIA_ERROR) {
+            reportUnsupported(`Playback issue: ${details}`);
+            return;
+          }
+          handleFatal(`Playback issue: ${details}`);
+        });
+        player.attachMediaElement(video);
+        player.load();
+        if (autoPlayRef.current) tryPlay().catch(() => undefined);
+      })
+      .catch((error) => handleFatal(`Could not start the MPEG-TS player: ${String(error)}`));
+  };
+
+  /** A fatal error: before the first frame the parent may switch engines, afterwards the stream is restarted. */
+  const handleFatal = (reason: string) => {
+    if (!hasPlayedRef.current && onFailedRef.current) {
+      destroyHls();
+      onFailedRef.current(reason);
+      return;
+    }
+    requestRestart(reason);
   };
 
   /** Schedules a full reload of the stream, with exponential backoff and a cap on attempts. */
@@ -498,6 +567,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
     destroyHls();
     setRestartCount(0);
     restartAttemptsRef.current = 0;
+    hasPlayedRef.current = false;
     lastRestartAtRef.current = Date.now();
     setNeedsUserAction(false);
     setPlaybackError('');
@@ -517,12 +587,14 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
     video.volume = Math.min(1, Math.max(0, prefs.volume));
     video.muted = prefs.muted;
 
-    attachSource(video, src);
+    const startsItself = attachSource(video, src);
 
     if (autoPlay) {
-      window.setTimeout(() => {
-        tryPlay().catch(() => undefined);
-      }, 50);
+      if (!startsItself) {
+        window.setTimeout(() => {
+          tryPlay().catch(() => undefined);
+        }, 50);
+      }
     } else {
       setNeedsUserAction(true);
     }
@@ -549,16 +621,26 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
       video.removeAttribute('src');
       video.load();
       lastRestartAtRef.current = Date.now();
-      attachSource(video, src);
-      tryPlay().catch(() => undefined);
+      if (!attachSource(video, src)) tryPlay().catch(() => undefined);
     }, delay);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restartCount, src]);
 
+  // Remember that the current source really played, whatever the auto-restart setting.
+  const hasVideo = Boolean(src);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onPlaying = () => {
+      hasPlayedRef.current = true;
+    };
+    video.addEventListener('playing', onPlaying);
+    return () => video.removeEventListener('playing', onPlaying);
+  }, [hasVideo]);
+
   // Smart stall watchdog: only restart after sustained playback stall,
   // NOT on transient buffering events (which are normal in HLS).
-  const hasVideo = Boolean(src);
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !autoRestart) return;
@@ -587,20 +669,20 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
         stalledSince = 0;
         lastTime = -1;
         onStatusRef.current?.('Stream stalled for too long, restarting...');
-        requestRestart('Stream stalled');
+        handleFatal('Stream stalled');
       }
     }, 2000);
 
     const onEnded = () => requestRestart('Stream ended');
     const onError = () => {
       // hls.js reports its own errors; this only covers sources played natively by the video element.
-      if (hlsRef.current || !video.getAttribute('src')) return;
+      if (hlsRef.current || mpegtsRef.current || !video.getAttribute('src')) return;
       setNeedsUserAction(false);
       if (video.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || video.error?.code === MediaError.MEDIA_ERR_DECODE) {
         reportUnsupported('The embedded WebView player could not decode this stream');
         return;
       }
-      requestRestart('The embedded WebView player lost the stream');
+      handleFatal('The embedded WebView player lost the stream');
     };
     video.addEventListener('ended', onEnded);
     video.addEventListener('error', onError);

@@ -21,6 +21,7 @@ const defaultSettings: AppSettings = {
   epgTimezoneMode: 'auto',
   epgTimeOffsetMinutes: 0,
   resumeLastChannel: true,
+  playbackEngine: 'auto',
 };
 
 const TAB_TITLES: Record<TabKey, string> = {

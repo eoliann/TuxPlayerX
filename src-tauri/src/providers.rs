@@ -168,6 +168,7 @@ fn parse_m3u(body: &str) -> Vec<Channel> {
     let mut current_group: Option<String> = None;
     let mut current_epg_id: Option<String> = None;
     let mut current_catchup: (Option<String>, Option<i64>, Option<String>) = (None, None, None);
+    let mut current_headers = (None::<String>, None::<String>);
 
     for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if line.starts_with("#EXTINF") {
@@ -181,14 +182,44 @@ fn parse_m3u(body: &str) -> Vec<Channel> {
                 .filter(|d| *d > 0);
             let kind = extract_attr(line, "catchup").map(|k| k.trim().to_ascii_lowercase()).filter(|k| !k.is_empty());
             current_catchup = (kind.clone(), days.or(kind.as_ref().map(|_| 7)), extract_attr(line, "catchup-source"));
+            current_headers = (
+                extract_attr(line, "http-user-agent").or_else(|| extract_attr(line, "user-agent")),
+                extract_attr(line, "http-referrer").or_else(|| extract_attr(line, "http-referer")),
+            );
+        } else if let Some(option) = line.strip_prefix("#EXTVLCOPT:") {
+            let (key, value) = option.split_once('=').unwrap_or((option, ""));
+            let value = Some(value.trim().to_string()).filter(|v| !v.is_empty());
+            match key.trim().to_ascii_lowercase().as_str() {
+                "http-user-agent" => current_headers.0 = value.or(current_headers.0.take()),
+                "http-referrer" | "http-referer" => current_headers.1 = value.or(current_headers.1.take()),
+                _ => {}
+            }
+        } else if let Some(json) = line.strip_prefix("#EXTHTTP:") {
+            // Kodi style: #EXTHTTP:{"User-Agent":"...","Referer":"..."}
+            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(json) {
+                for (key, value) in map {
+                    let value = value.as_str().map(str::to_string);
+                    match key.to_ascii_lowercase().as_str() {
+                        "user-agent" => current_headers.0 = value.or(current_headers.0.take()),
+                        "referer" | "referrer" => current_headers.1 = value.or(current_headers.1.take()),
+                        _ => {}
+                    }
+                }
+            }
         } else if !line.starts_with('#') {
             let idx = channels.len() + 1;
             let name = current_name.take().unwrap_or_else(|| format!("Channel {idx}"));
             let group = current_group.take();
+            let (stream_url, pipe_headers) = split_pipe_headers(line);
+            let (mut user_agent, mut referrer) = std::mem::take(&mut current_headers);
+            user_agent = pipe_headers.0.or(user_agent);
+            referrer = pipe_headers.1.or(referrer);
             channels.push(Channel {
                 id: stable_m3u_id(&name, group.as_deref(), &mut seen_ids),
                 name,
-                stream_url: line.to_string(),
+                stream_url,
+                user_agent,
+                referrer,
                 logo: current_logo.take(),
                 group,
                 raw_cmd: None,
@@ -200,6 +231,23 @@ fn parse_m3u(body: &str) -> Vec<Channel> {
         }
     }
     channels
+}
+
+/// Splits Kodi-style `url|User-Agent=...&Referer=...` into the clean URL and its headers.
+fn split_pipe_headers(line: &str) -> (String, (Option<String>, Option<String>)) {
+    let Some((url, options)) = line.split_once('|') else {
+        return (line.to_string(), (None, None));
+    };
+    let mut headers = (None, None);
+    for (key, value) in url::form_urlencoded::parse(options.as_bytes()) {
+        let value = Some(value.trim().to_string()).filter(|v| !v.is_empty());
+        match key.to_ascii_lowercase().as_str() {
+            "user-agent" => headers.0 = value,
+            "referer" | "referrer" => headers.1 = value,
+            _ => {}
+        }
+    }
+    (url.trim().to_string(), headers)
 }
 
 /// The channel name is after the first comma that is not inside a quoted attribute
@@ -503,7 +551,7 @@ async fn load_mac_channels(sub: &Subscription) -> anyhow::Result<Vec<Channel>> {
             .and_then(value_to_string);
         out.push(Channel {
             id, name, stream_url: clean_stream_url(&raw_cmd), logo, group, raw_cmd: Some(raw_cmd), epg_id,
-            catchup_days: None, catchup_type: None, catchup_source: None,
+            catchup_days: None, catchup_type: None, catchup_source: None, user_agent: None, referrer: None,
         });
     }
 
@@ -1368,6 +1416,24 @@ mod tests {
 
     fn xmltv_time(dt: DateTime<Utc>) -> String {
         dt.format("%Y%m%d%H%M%S +0000").to_string()
+    }
+
+    #[test]
+    fn parses_stream_headers_from_all_playlist_styles() {
+        let channels = parse_m3u(concat!(
+            "#EXTM3U\n",
+            "#EXTINF:-1 http-user-agent=\"Attr UA\",A\n#EXTVLCOPT:http-referrer=https://ref.example/\nhttp://s/a.m3u8\n",
+            "#EXTINF:-1,B\nhttp://s/b.ts|User-Agent=Pipe%20UA&Referer=https://pipe.example/\n",
+            "#EXTINF:-1,C\n#EXTHTTP:{\"User-Agent\":\"Json UA\"}\nhttp://s/c.ts\n",
+            "#EXTINF:-1,D\nhttp://s/d.ts\n",
+        ));
+        assert_eq!(channels[0].user_agent.as_deref(), Some("Attr UA"));
+        assert_eq!(channels[0].referrer.as_deref(), Some("https://ref.example/"));
+        assert_eq!(channels[1].stream_url, "http://s/b.ts");
+        assert_eq!(channels[1].user_agent.as_deref(), Some("Pipe UA"));
+        assert_eq!(channels[1].referrer.as_deref(), Some("https://pipe.example/"));
+        assert_eq!(channels[2].user_agent.as_deref(), Some("Json UA"));
+        assert_eq!(channels[3].user_agent, None);
     }
 
     #[test]

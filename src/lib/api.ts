@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import {
   Channel, ChannelLoadResult, EpgChannelKey, EpgGridItem, EpgNow, EpgProgram, ImportSummary, SeriesInfo, Subscription, SubscriptionInfo,
-  AppSettings, AppInfo, VodCategory, VodDetails, VodItem, VodKind, VodPage, VodPlayRequest,
+  AppSettings, AppInfo, DirectStream, StreamHeaders, VodCategory, VodDetails, VodItem, VodKind, VodPage, VodPlayRequest,
 } from './types';
 
 export const api = {
@@ -35,9 +35,14 @@ export const api = {
   saveSettings: (settings: AppSettings) => invoke<void>('save_settings', { settings }),
   openPipWindow: (url: string, title: string) => invoke<void>('open_pip_window', { url, title }),
   closePipWindow: () => invoke<void>('close_pip_window'),
-  openExternalPlayer: (url: string) => invoke<void>('open_external_player', { url }),
-  openDetachedExternalPlayer: (url: string) => invoke<void>('open_detached_external_player', { url }),
-  startVlcBridge: (url: string, transcode = false) => invoke<string>('start_vlc_bridge', { url, transcode }),
+  openExternalPlayer: (url: string, headers: StreamHeaders = {}) =>
+    invoke<void>('open_external_player', { url, userAgent: headers.userAgent ?? null, referrer: headers.referrer ?? null }),
+  openDetachedExternalPlayer: (url: string, headers: StreamHeaders = {}) =>
+    invoke<void>('open_detached_external_player', { url, userAgent: headers.userAgent ?? null, referrer: headers.referrer ?? null }),
+  startVlcBridge: (url: string, transcode = false, headers: StreamHeaders = {}) =>
+    invoke<string>('start_vlc_bridge', { url, transcode, userAgent: headers.userAgent ?? null, referrer: headers.referrer ?? null }),
+  prepareDirectStream: (url: string, headers: StreamHeaders = {}) =>
+    invoke<DirectStream>('prepare_direct_stream', { url, userAgent: headers.userAgent ?? null, referrer: headers.referrer ?? null }),
   stopVlcBridge: () => invoke<void>('stop_vlc_bridge'),
   stopExternalPlayer: () => invoke<void>('stop_external_player'),
   shutdownPlayback: () => invoke<void>('shutdown_playback'),

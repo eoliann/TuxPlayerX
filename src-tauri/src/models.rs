@@ -39,6 +39,12 @@ pub struct Channel {
     /// M3U catchup-source template, used by the "default" and "append" catch-up types.
     #[serde(default)]
     pub catchup_source: Option<String>,
+    /// User-Agent the playlist asks for (`http-user-agent`, `#EXTVLCOPT`, `url|User-Agent=`).
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// Referer the playlist asks for (`http-referrer`, `#EXTVLCOPT`, `url|Referer=`).
+    #[serde(default)]
+    pub referrer: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,9 +110,14 @@ pub struct AppSettings {
     pub epg_time_offset_minutes: i64,
     #[serde(default = "default_true")]
     pub resume_last_channel: bool,
+    /// "auto": built-in player first, VLC bridge only when needed; "vlc": always use the VLC bridge.
+    #[serde(default = "default_playback_engine")]
+    pub playback_engine: String,
 }
 
 fn default_true() -> bool { true }
+
+fn default_playback_engine() -> String { "auto".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

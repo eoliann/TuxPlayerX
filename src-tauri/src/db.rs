@@ -83,6 +83,7 @@ impl Database {
             ("epg_timezone_mode", "auto"),
             ("epg_time_offset_minutes", "0"),
             ("resume_last_channel", "true"),
+            ("playback_engine", "auto"),
         ];
         for (key, value) in defaults {
             conn.execute(
@@ -380,6 +381,7 @@ impl Database {
             epg_timezone_mode: get("epg_timezone_mode", "auto")?,
             epg_time_offset_minutes: get("epg_time_offset_minutes", "0")?.parse().unwrap_or(0),
             resume_last_channel: get("resume_last_channel", "true")? == "true",
+            playback_engine: get("playback_engine", "auto")?,
         })
     }
 
@@ -395,6 +397,7 @@ impl Database {
             ("epg_timezone_mode", settings.epg_timezone_mode.clone()),
             ("epg_time_offset_minutes", settings.epg_time_offset_minutes.to_string()),
             ("resume_last_channel", settings.resume_last_channel.to_string()),
+            ("playback_engine", settings.playback_engine.clone()),
         ];
         for (key, value) in values {
             conn.execute(
