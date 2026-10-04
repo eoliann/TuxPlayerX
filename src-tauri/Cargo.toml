@@ -6,6 +6,11 @@ authors = ["eoliann"]
 edition = "2021"
 license = "MIT"
 
+# The app is built as a library so the same code also runs as the Android app.
+[lib]
+name = "tuxplayerx_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
