@@ -102,7 +102,8 @@ It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a
 
 TuxPlayerX also runs on Android, from the same code base: the Rust backend (playlists, MAC portals, EPG, the local media proxy) is shared, and `src/mobile` holds a touch- and remote-friendly interface. The desktop interface lives in `src/desktop`, shared frontend code in `src/core`.
 
-- **Live TV**: groups, search, favorites, recently watched and now-playing guide; a multi-column list or a compact logo grid for large playlists; full-screen player with channel up/down.
+- **Live TV**: groups, search, favorites, recently watched and now-playing guide; a multi-column list or a compact logo grid for large playlists; full-screen player with channel up/down and a Fit/Fill switch.
+- **TV guide and catch-up**: a full guide grid (channels down, time across); past programmes on channels with a TV archive replay from the guide or from the player's "Earlier" list.
 - **Movies & Series**: poster grid, details, seasons and episodes, resume where you left off.
 - **Subscriptions**: M3U URL, an M3U file from the device, or a MAC portal.
 - **Android TV**: listed in the TV launcher; the remote's arrows move between items, OK selects, Channel +/− switches channels, Back closes the player.
