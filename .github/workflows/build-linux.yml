@@ -1,0 +1,79 @@
+name: Build Linux packages
+
+# Runs automatically when a GitHub release is published and attaches the packages to it as
+# TuxPlayerX_amd64.deb and TuxPlayerX_x86_64.rpm. It can also be run manually from the Actions tab;
+# give a release tag (for example v2.0.6) to build that tag and attach the packages to its release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach the packages to (leave empty to only build)
+        required: false
+        default: ''
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    # Built on the oldest supported Ubuntu so the packages also run on older glibc-based distros.
+    runs-on: ubuntu-22.04
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build DEB and RPM packages
+        run: npm run tauri:build -- --bundles deb,rpm
+
+      - name: Rename packages
+        run: |
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb | head -n 1)
+          rpm=$(ls src-tauri/target/release/bundle/rpm/*.rpm | head -n 1)
+          test -n "$deb" && test -n "$rpm" || { echo "DEB or RPM package was not produced"; exit 1; }
+          cp "$deb" TuxPlayerX_amd64.deb
+          cp "$rpm" TuxPlayerX_x86_64.rpm
+          echo "Built $(basename "$deb") and $(basename "$rpm")"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TuxPlayerX-linux
+          path: |
+            TuxPlayerX_amd64.deb
+            TuxPlayerX_x86_64.rpm
+
+      - name: Attach packages to release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" TuxPlayerX_amd64.deb TuxPlayerX_x86_64.rpm --clobber
