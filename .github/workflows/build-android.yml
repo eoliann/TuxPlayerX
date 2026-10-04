@@ -8,7 +8,7 @@ name: Build Android APK
 #   ANDROID_KEYSTORE_BASE64  the release keystore (.jks), base64 encoded
 #   ANDROID_KEY_ALIAS        key alias inside the keystore
 #   ANDROID_KEY_PASSWORD     keystore and key password
-# Without them the workflow still builds, but the APK is unsigned and cannot be installed.
+# Without them the APK is signed with a throwaway debug key (fine for testing, not for releases).
 on:
   workflow_dispatch:
     inputs:
@@ -66,7 +66,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::warning::Signing secrets are not set; the APK will be unsigned."
+            echo "::warning::Signing secrets are not set; the APK is signed with a debug key."
             exit 0
           fi
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"

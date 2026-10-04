@@ -15,7 +15,7 @@ val tauriProperties = Properties().apply {
 }
 
 // Release signing: keystore.properties (never committed) is written by the CI workflow from secrets,
-// or created locally next to this project's settings.gradle. Without it the release APK is unsigned.
+// or created locally next to this project's settings.gradle. Without it the release APK uses the debug key.
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) {
@@ -58,9 +58,9 @@ android {
             }
         }
         getByName("release") {
-            if (keystorePropertiesFile.exists()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            // Local test builds without the release key are signed with the Android debug key
+            // (installable for testing; uninstall before installing an official release).
+            signingConfig = if (keystorePropertiesFile.exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
