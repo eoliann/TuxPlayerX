@@ -83,12 +83,15 @@ jobs:
               else
                 args+=(-d "chat_id=${item}")
               fi
-              response=$(curl -sS "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" "${args[@]}")
-              if jq -e '.ok' <<< "$response" > /dev/null; then
+              # -g: no URL globbing, so stray [ ] { } in the token cannot abort the run.
+              # A curl failure is reported for this chat and the remaining chats are still sent.
+              response=$(curl -sSg --max-time 30 "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" "${args[@]}") \
+                || response=$(jq -n --arg d "request failed (curl exit $?)" '{ok: false, description: $d}')
+              if jq -e '.ok' <<< "$response" > /dev/null 2>&1; then
                 echo "Sent to ${item}"
                 sent=$((sent + 1))
               else
-                echo "::warning::Sending to ${item} failed: $(jq -r '.description // .' <<< "$response")"
+                echo "::warning::Sending to ${item} failed: $(jq -r '.description // .' <<< "$response" 2>/dev/null || head -c 200 <<< "$response")"
                 failed=1
               fi
             done
