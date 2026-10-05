@@ -183,10 +183,11 @@ fn stop_vlc_bridge_internal(state: &AppState) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn app_info() -> AppInfo {
+fn app_info(app: tauri::AppHandle) -> AppInfo {
     AppInfo {
         name: "TuxPlayerX".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        // The bundle version: tauri.conf.json on desktop, overridden by tauri.android.conf.json on Android.
+        version: app.package_info().version.to_string(),
         author: env!("CARGO_PKG_AUTHORS").to_string(),
         repository: "eoliann/TuxPlayerX".to_string(),
         license: env!("CARGO_PKG_LICENSE").to_string(),
@@ -688,8 +689,32 @@ fn open_pip_window(app: tauri::AppHandle, url: String, title: String) -> Result<
         .map_err(err)
 }
 
+/// GStreamer hardware video decoders that WebKitGTK must not pick. VA-API decoding in the embedded
+/// player stutters and repeats frames (seen on Intel with both the legacy `vaapi` and the newer `va`
+/// plugins); software decoding is smooth and cheap for live TV. Names a system lacks are ignored.
+#[cfg(target_os = "linux")]
+const DISABLED_HW_DECODERS: &[&str] = &[
+    "vaapidecodebin", "vaapih264dec", "vaapih265dec", "vaapiav1dec", "vaapimpeg2dec", "vaapivp8dec", "vaapivp9dec",
+    "vah264dec", "vah265dec", "vaav1dec", "vampeg2dec", "vavp8dec", "vavp9dec",
+    "nvh264dec", "nvh265dec", "nvav1dec", "nvmpeg2videodec", "nvvp8dec", "nvvp9dec",
+];
+
+/// Forces software video decoding unless the user set their own ranks or opted in with TUXPLAYERX_HW_DECODE=1.
+/// Must run before WebKit starts GStreamer, i.e. before any thread is spawned.
+#[cfg(target_os = "linux")]
+fn configure_linux_video_decoding() {
+    if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_some() || std::env::var_os("TUXPLAYERX_HW_DECODE").is_some_and(|v| v == "1") {
+        return;
+    }
+    let ranks = DISABLED_HW_DECODERS.iter().map(|name| format!("{name}:NONE")).collect::<Vec<_>>().join(",");
+    std::env::set_var("GST_PLUGIN_FEATURE_RANK", ranks);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    configure_linux_video_decoding();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
