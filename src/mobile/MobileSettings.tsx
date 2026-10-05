@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, Moon, Save, Sun } from 'lucide-react';
 import { AppInfo, AppSettings } from '../core/types';
 import { api } from '../core/api';
+import { ANDROID_VERSION, APP_NAME } from '../core/appMeta';
 import { cn } from '../core/utils';
 
 interface Props {
@@ -13,17 +14,32 @@ interface Props {
 export function MobileSettings({ settings, onSettings, onStatus }: Props) {
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [info, setInfo] = useState<AppInfo | null>(null);
+  // Unsaved edits survive the theme being applied (which updates `settings`).
+  const dirtyRef = useRef(false);
 
-  useEffect(() => setDraft(settings), [settings]);
+  useEffect(() => {
+    setDraft((prev) => (dirtyRef.current ? { ...prev, theme: settings.theme } : settings));
+  }, [settings]);
   useEffect(() => {
     api.appInfo().then(setInfo).catch(() => undefined);
   }, []);
 
-  const update = (patch: Partial<AppSettings>) => setDraft((prev) => ({ ...prev, ...patch }));
+  const update = (patch: Partial<AppSettings>) => {
+    dirtyRef.current = true;
+    setDraft((prev) => ({ ...prev, ...patch }));
+  };
+
+  /** The theme applies and is stored right away, like on desktop; other settings wait for Save. */
+  const selectTheme = (theme: AppSettings['theme']) => {
+    const next = { ...settings, theme };
+    onSettings(next);
+    api.saveSettings(next).catch((error) => onStatus(String(error)));
+  };
 
   const save = async () => {
     try {
       await api.saveSettings(draft);
+      dirtyRef.current = false;
       onSettings(draft);
       onStatus('Settings saved.');
     } catch (error) {
@@ -40,7 +56,7 @@ export function MobileSettings({ settings, onSettings, onStatus }: Props) {
           <button
             key={theme}
             type="button"
-            onClick={() => update({ theme })}
+            onClick={() => selectTheme(theme)}
             className={cn(
               'flex items-center gap-2 rounded-2xl border p-4 text-sm font-black',
               draft.theme === theme ? 'border-cyan-400 bg-cyan-400/10' : 'border-white/10 light:border-slate-200',
@@ -73,8 +89,8 @@ export function MobileSettings({ settings, onSettings, onStatus }: Props) {
       </button>
 
       <div className="rounded-3xl border border-white/10 p-4 text-sm light:border-slate-200">
-        <div className="font-black">{info?.name ?? 'TuxPlayerX'} for Android</div>
-        <div className="mt-1 text-slate-400">Version {info?.version ?? ''}</div>
+        <div className="font-black">{info?.name || APP_NAME} for Android</div>
+        <div className="mt-1 text-slate-400 light:text-slate-500">Version {info?.version || ANDROID_VERSION}</div>
         <p className="mt-2 text-xs text-slate-400">
           Plays your own M3U playlists and MAC portal subscriptions. Some channels use video or audio formats your device cannot decode.
         </p>
