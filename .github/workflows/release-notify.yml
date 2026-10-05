@@ -4,17 +4,20 @@ name: Notify Telegram on Release
 # The packages are attached by the build workflows a few minutes after publishing, so this waits
 # for them (up to 40 minutes) and then posts the download links that exist.
 #
-# Secrets (Settings → Secrets and variables → Actions):
-#   TG_BOT_TOKEN  token of the Telegram bot (the bot must be a member of every group)
-#   TG_CHATS      comma-separated chats: "chat_id" or "chat_id:topic_id" for a forum topic,
-#                 e.g. "-1001234567890,-1009876543210:42"
+# Secrets (Settings → Secrets and variables → Actions). Each chat list is comma-separated, with
+# entries "chat_id" or "chat_id:topic_id" for a forum topic, e.g. "-1001234567890,-1009876543210:42".
+#   TG_BOT_TOKEN      token of the Telegram bot (the bot must be a member of every group)
+#   TG_CHATS          chats that get every release, with all download links
+#   TG_CHATS_WINDOWS  chats that get desktop releases (vX.Y.Z) with the Windows installer
+#   TG_CHATS_LINUX    chats that get desktop releases (vX.Y.Z) with the .deb and .rpm packages
+#   TG_CHATS_ANDROID  chats that get Android releases (android-vX.Y.Z) with the APK
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to announce, e.g. v2.0.9 or android-v1.1.1 (posts to all groups)
+        description: Release tag to announce, e.g. v2.0.9 or android-v1.1.1 (posts to all its groups)
         required: true
 
 jobs:
@@ -24,6 +27,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
       TG_CHATS: ${{ secrets.TG_CHATS }}
+      TG_CHATS_WINDOWS: ${{ secrets.TG_CHATS_WINDOWS }}
+      TG_CHATS_LINUX: ${{ secrets.TG_CHATS_LINUX }}
+      TG_CHATS_ANDROID: ${{ secrets.TG_CHATS_ANDROID }}
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - name: Wait for the release packages
@@ -45,8 +51,8 @@ jobs:
 
       - name: Send Telegram notifications
         run: |
-          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHATS" ]; then
-            echo "::error::TG_BOT_TOKEN or TG_CHATS is not set."
+          if [ -z "$TG_BOT_TOKEN" ]; then
+            echo "::error::TG_BOT_TOKEN is not set."
             exit 1
           fi
 
@@ -56,41 +62,57 @@ jobs:
           asset_url() { jq -r --arg n "$1" '.assets[] | select(.name == $n) | .url' <<< "$release"; }
           link() { local u; u=$(asset_url "$1"); if [ -n "$u" ]; then printf '\n⬇️ <a href="%s">%s</a>' "$u" "$2"; fi; }
 
-          if [[ "$RELEASE_TAG" == android-* ]]; then
-            TEXT="📢 <b>TuxPlayerX pentru Android are o nouă versiune!</b>
-          <b>${name:-$RELEASE_TAG}</b> (tag: <code>${RELEASE_TAG}</code>)
-
-          👉 Player IPTV pentru telefoane, tablete și Android TV: liste M3U, abonamente MAC portal, ghid TV și catch-up.
-          Cod gratuit și open source, fără reclame sau spyware.
-
-          👉 <a href=\"${url}\">Mergi la pagina noii versiuni</a>$(link TuxPlayerX-android.apk 'Descarcă APK-ul')"
-          else
-            TEXT="📢 <b>TuxPlayerX are o nouă versiune pe GitHub!</b>
-          <b>${name:-$RELEASE_TAG}</b> (tag: <code>${RELEASE_TAG}</code>)
-
-          👉 Player IPTV pentru Linux și Windows: liste M3U, abonamente MAC portal, ghid TV, filme și seriale.
-          Cod gratuit și open source, fără reclame sau spyware.
-
-          👉 <a href=\"${url}\">Mergi la pagina noii versiuni</a>$(link TuxPlayerXSetup.exe 'Windows (.exe)')$(link TuxPlayerX_amd64.deb 'Linux Debian/Ubuntu/Mint (.deb)')$(link TuxPlayerX_x86_64.rpm 'Linux Fedora/openSUSE (.rpm)')"
-          fi
+          # message <title> <description> <download links>
+          message() {
+            printf '📢 <b>%s</b>\n<b>%s</b> (tag: <code>%s</code>)\n\n👉 %s\nCod gratuit și open source, fără reclame sau spyware.\n\n👉 <a href="%s">Mergi la pagina noii versiuni</a>%s' \
+              "$1" "${name:-$RELEASE_TAG}" "$RELEASE_TAG" "$2" "$url" "$3"
+          }
 
           failed=0
-          IFS=',' read -r -a CHATS <<< "$TG_CHATS"
-          for item in "${CHATS[@]}"; do
-            item=$(xargs <<< "$item")
-            [ -z "$item" ] && continue
-            args=(-d parse_mode=HTML -d disable_web_page_preview=true --data-urlencode "text=${TEXT}")
-            if [[ "$item" == *:* ]]; then
-              args+=(-d "chat_id=${item%%:*}" -d "message_thread_id=${item##*:}")
-            else
-              args+=(-d "chat_id=${item}")
-            fi
-            response=$(curl -sS "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" "${args[@]}")
-            if jq -e '.ok' <<< "$response" > /dev/null; then
-              echo "Sent to ${item}"
-            else
-              echo "::warning::Sending to ${item} failed: $(jq -r '.description // .' <<< "$response")"
-              failed=1
-            fi
-          done
+          sent=0
+          # send <comma-separated chats> <text>
+          send() {
+            local item args response
+            IFS=',' read -r -a chats <<< "$1"
+            for item in "${chats[@]}"; do
+              item=$(xargs <<< "$item")
+              [ -z "$item" ] && continue
+              args=(-d parse_mode=HTML -d disable_web_page_preview=true --data-urlencode "text=$2")
+              if [[ "$item" == *:* ]]; then
+                args+=(-d "chat_id=${item%%:*}" -d "message_thread_id=${item##*:}")
+              else
+                args+=(-d "chat_id=${item}")
+              fi
+              response=$(curl -sS "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" "${args[@]}")
+              if jq -e '.ok' <<< "$response" > /dev/null; then
+                echo "Sent to ${item}"
+                sent=$((sent + 1))
+              else
+                echo "::warning::Sending to ${item} failed: $(jq -r '.description // .' <<< "$response")"
+                failed=1
+              fi
+            done
+          }
+
+          if [[ "$RELEASE_TAG" == android-* ]]; then
+            apk=$(link TuxPlayerX-android.apk 'Descarcă APK-ul')
+            text=$(message 'TuxPlayerX pentru Android are o nouă versiune!' \
+              'Player IPTV pentru telefoane, tablete și Android TV: liste M3U, abonamente MAC portal, ghid TV și catch-up.' "$apk")
+            send "$TG_CHATS_ANDROID" "$text"
+            send "$TG_CHATS" "$text"
+          else
+            exe=$(link TuxPlayerXSetup.exe 'Windows (.exe)')
+            linux="$(link TuxPlayerX_amd64.deb 'Linux Debian/Ubuntu/Mint (.deb)')$(link TuxPlayerX_x86_64.rpm 'Linux Fedora/openSUSE (.rpm)')"
+            send "$TG_CHATS_WINDOWS" "$(message 'TuxPlayerX pentru Windows are o nouă versiune!' \
+              'Player IPTV pentru Windows: liste M3U, abonamente MAC portal, ghid TV, filme și seriale.' "$exe")"
+            send "$TG_CHATS_LINUX" "$(message 'TuxPlayerX pentru Linux are o nouă versiune!' \
+              'Player IPTV pentru Linux: liste M3U, abonamente MAC portal, ghid TV, filme și seriale.' "$linux")"
+            send "$TG_CHATS" "$(message 'TuxPlayerX are o nouă versiune pe GitHub!' \
+              'Player IPTV pentru Linux și Windows: liste M3U, abonamente MAC portal, ghid TV, filme și seriale.' "$exe$linux")"
+          fi
+
+          if [ "$sent" = 0 ] && [ "$failed" = 0 ]; then
+            echo "::error::No Telegram chats are configured for this release."
+            exit 1
+          fi
           exit $failed
