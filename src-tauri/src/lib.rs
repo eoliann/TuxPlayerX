@@ -689,7 +689,6 @@ fn open_pip_window(app: tauri::AppHandle, url: String, title: String) -> Result<
         .map_err(err)
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// GStreamer hardware video decoders that WebKitGTK must not pick. VA-API decoding in the embedded
 /// player stutters and repeats frames (seen on Intel with both the legacy `vaapi` and the newer `va`
 /// plugins); software decoding is smooth and cheap for live TV. Names a system lacks are ignored.
@@ -711,6 +710,7 @@ fn configure_linux_video_decoding() {
     std::env::set_var("GST_PLUGIN_FEATURE_RANK", ranks);
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
     configure_linux_video_decoding();
