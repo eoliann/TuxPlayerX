@@ -15,3 +15,8 @@ src-tauri/gen/*
 
 # Android Studio project settings (local)
 .idea/
+
+# Android signing keys (never commit)
+*.jks
+*.keystore
+keystore.properties
