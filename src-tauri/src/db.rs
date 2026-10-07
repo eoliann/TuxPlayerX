@@ -7,6 +7,8 @@ use crate::models::{AppSettings, BackupFile, BackupSubscription, Channel, Import
 pub const DEFAULT_EPG_URL: &str = "https://epgshare01.online/epgshare01/epg_ripper_RO1.xml.gz";
 /// Previous default; it started returning "No Data" for every programme.
 const OLD_DEFAULT_EPG_URL: &str = "https://iptv-epg.org/files/epg-ro.xml";
+/// Settings (camelCase, as in backups) that a backup file may not change.
+const NOT_IMPORTED_SETTINGS: [&str; 1] = ["externalPlayerCommand"];
 
 pub struct Database {
     // A single long-lived connection; access is already serialized by the Mutex in AppState.
@@ -284,9 +286,14 @@ impl Database {
         }
 
         // Overlay the backed-up settings on the current ones so unknown or missing keys are tolerated.
+        // The external player command is never imported: a backup from someone else must not be able
+        // to choose which program the app starts (security audit S2).
         let mut settings = serde_json::to_value(self.get_settings()?)?;
         if let (Some(target), Some(source)) = (settings.as_object_mut(), backup.settings.as_object()) {
             for (key, value) in source {
+                if NOT_IMPORTED_SETTINGS.contains(&key.as_str()) {
+                    continue;
+                }
                 if target.contains_key(key) {
                     target.insert(key.clone(), value.clone());
                 }
