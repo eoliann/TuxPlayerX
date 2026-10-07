@@ -95,7 +95,7 @@ export function MobileSettings({ settings, onSettings, onStatus }: Props) {
           Plays your own M3U playlists and MAC portal subscriptions. Some channels use video or audio formats your device cannot decode.
         </p>
         {info?.repository && (
-          <button type="button" onClick={() => api.openUrl(info.repository).catch(() => undefined)} className="btn-secondary mt-3">
+          <button type="button" onClick={() => api.openUrl(`https://github.com/${info.repository}`).catch((error) => onStatus(String(error)))} className="btn-secondary mt-3">
             <ExternalLink size={16} /> Project on GitHub
           </button>
         )}

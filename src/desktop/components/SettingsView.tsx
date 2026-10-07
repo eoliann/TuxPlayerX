@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { save as saveFileDialog } from '@tauri-apps/plugin-dialog';
 import { Download, FolderOpen, Moon, Save, Sun, Upload } from 'lucide-react';
 import { AppSettings } from '../../core/types';
 import { api } from '../../core/api';
@@ -29,9 +30,16 @@ export function SettingsView({ settings: savedSettings, onSettings, onDataChange
   const [lastBackupPath, setLastBackupPath] = useState('');
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
+  /** The backup contains subscription passwords, so the user chooses where it is stored. */
   const exportBackup = async () => {
     try {
-      const path = await api.exportBackup();
+      const target = await saveFileDialog({
+        title: 'Save TuxPlayerX backup (contains passwords)',
+        defaultPath: `TuxPlayerX-backup-${new Date().toISOString().slice(0, 10)}.json`,
+        filters: [{ name: 'TuxPlayerX backup', extensions: ['json'] }],
+      });
+      if (!target) return;
+      const path = await api.exportBackup(target);
       setLastBackupPath(path);
       onStatus(`Backup saved: ${path}`);
     } catch (err) {
@@ -178,7 +186,7 @@ export function SettingsView({ settings: savedSettings, onSettings, onDataChange
             <button onClick={exportBackup} className="btn-secondary"><Download size={15} /> Export backup</button>
             <button onClick={() => importInputRef.current?.click()} className="btn-secondary"><Upload size={15} /> Import backup</button>
             {lastBackupPath && (
-              <button onClick={() => api.openUrl(lastBackupPath.replace(/[\\/][^\\/]+$/, '')).catch(() => undefined)} className="btn-secondary">
+              <button onClick={() => api.revealBackup(lastBackupPath).catch((err) => onStatus(String(err)))} className="btn-secondary">
                 <FolderOpen size={15} /> Open folder
               </button>
             )}

@@ -2,6 +2,8 @@ mod db;
 mod media_proxy;
 mod models;
 mod providers;
+mod secret_store;
+mod security;
 mod xtream;
 
 use std::fs;
@@ -56,7 +58,8 @@ impl Drop for AppState {
     }
 }
 
-fn err<E: std::fmt::Display>(e: E) -> String { e.to_string() }
+/// Error text for the UI, with credentials (passwords in URLs, Xtream path segments) masked.
+fn err<E: std::fmt::Display>(e: E) -> String { security::redact(&e.to_string()) }
 
 #[cfg(target_os = "windows")]
 fn kill_child_process_tree(mut child: Child) {
@@ -90,86 +93,107 @@ fn cleanup_playback_internal(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-fn content_type_for(path: &str) -> &'static str {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".m3u8") { "application/vnd.apple.mpegurl" }
-    else if lower.ends_with(".ts") { "video/mp2t" }
-    else if lower.ends_with(".html") { "text/html; charset=utf-8" }
-    else { "application/octet-stream" }
+/// Most simultaneous connections the bridge HTTP server serves (the WebView needs a handful).
+const BRIDGE_MAX_CONNECTIONS: usize = 16;
+
+/// The only files the bridge serves: the playlist and its numbered segments.
+fn bridge_file_name(name: &str) -> Option<(&str, &'static str)> {
+    if name == "stream.m3u8" {
+        return Some((name, "application/vnd.apple.mpegurl"));
+    }
+    let digits = name.strip_prefix("stream-")?.strip_suffix(".ts")?;
+    (digits.len() == 8 && digits.bytes().all(|b| b.is_ascii_digit())).then_some((name, "video/mp2t"))
 }
 
-fn serve_bridge_file(mut stream: std::net::TcpStream, root: &std::path::Path) {
+fn bridge_response(stream: &mut std::net::TcpStream, status: &str, content_type: &str, body: &[u8], cors: &str) {
+    let head = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-cache, no-store, must-revalidate\r\n{cors}Connection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(body);
+}
+
+/// Serves one request of the local VLC bridge. Only `/<token>/stream.m3u8` and `/<token>/stream-NNNNNNNN.ts`
+/// inside the bridge folder are served; anything else (other paths, absolute or network paths, missing or
+/// wrong token) gets 404, so other programs and web pages cannot read files through it.
+fn serve_bridge_file(mut stream: std::net::TcpStream, root: &std::path::Path, token: &str) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
     let mut buffer = [0_u8; 2048];
     let read = stream.read(&mut buffer).unwrap_or(0);
     let request = String::from_utf8_lossy(&buffer[..read]);
-    let mut path = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("/stream.m3u8")
-        .split('?')
-        .next()
-        .unwrap_or("/stream.m3u8")
-        .trim_start_matches('/')
-        .to_string();
+    let mut request_line = request.lines().next().unwrap_or_default().split_whitespace();
+    let method = request_line.next().unwrap_or_default();
+    let target = request_line.next().unwrap_or_default();
+    let path = target.split('?').next().unwrap_or_default();
+    // hls.js in the app reads the playlist with XHR, so the app's own origin (and only it) gets CORS.
+    let cors = security::cors_header_for(security::origin_of(&request));
+    let not_found = |stream: &mut std::net::TcpStream| bridge_response(stream, "404 Not Found", "text/plain", b"Not found", &cors);
 
-    if path.is_empty() { path = "stream.m3u8".to_string(); }
-    if path.contains("..") { path = "stream.m3u8".to_string(); }
-
-    match fs::read(root.join(&path)) {
-        Ok(bytes) => {
-            let headers = format!(
-                "HTTP/1.1 200 OK
-Content-Type: {}
-Content-Length: {}
-Access-Control-Allow-Origin: *
-Cache-Control: no-cache, no-store, must-revalidate
-Pragma: no-cache
-Connection: close
-
-",
-                content_type_for(&path),
-                bytes.len()
-            );
-            let _ = stream.write_all(headers.as_bytes());
-            let _ = stream.write_all(&bytes);
-        }
-        Err(_) => {
-            let body = b"Not ready";
-            let headers = format!(
-                "HTTP/1.1 404 Not Found
-Content-Type: text/plain
-Content-Length: {}
-Access-Control-Allow-Origin: *
-Cache-Control: no-cache
-Connection: close
-
-",
-                body.len()
-            );
-            let _ = stream.write_all(headers.as_bytes());
-            let _ = stream.write_all(body);
-        }
+    let mut parts = path.strip_prefix('/').unwrap_or_default().splitn(2, '/');
+    let (Some(given_token), Some(name)) = (parts.next(), parts.next()) else { return not_found(&mut stream) };
+    let Some((name, content_type)) = bridge_file_name(name) else { return not_found(&mut stream) };
+    if method != "GET" || !security::constant_time_eq(given_token.as_bytes(), token.as_bytes()) {
+        return not_found(&mut stream);
+    }
+    match fs::read(root.join(name)) {
+        Ok(bytes) => bridge_response(&mut stream, "200 OK", content_type, &bytes, &cors),
+        Err(_) => bridge_response(&mut stream, "404 Not Found", "text/plain", b"Not ready", &cors),
     }
 }
 
-fn start_static_hls_server(listener: TcpListener, root: PathBuf, stop_flag: Arc<AtomicBool>) {
+fn start_static_hls_server(listener: TcpListener, root: PathBuf, token: String, stop_flag: Arc<AtomicBool>) {
     let _ = listener.set_nonblocking(true);
     let root = Arc::new(root);
+    let token = Arc::new(token);
+    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     thread::spawn(move || {
         while !stop_flag.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, _addr)) => {
+                    if active.load(Ordering::SeqCst) >= BRIDGE_MAX_CONNECTIONS {
+                        continue; // Dropping the stream closes the connection.
+                    }
                     // One short-lived thread per request so a slow segment download never blocks the playlist.
                     let _ = stream.set_nonblocking(false);
-                    let root = Arc::clone(&root);
-                    thread::spawn(move || serve_bridge_file(stream, &root));
+                    let (root, token, active) = (Arc::clone(&root), Arc::clone(&token), Arc::clone(&active));
+                    active.fetch_add(1, Ordering::SeqCst);
+                    thread::spawn(move || {
+                        serve_bridge_file(stream, &root, &token);
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    });
                 }
                 Err(_) => thread::sleep(Duration::from_millis(50)),
             }
         }
     });
+}
+
+/// Creates the bridge folder with a random name that must not exist yet (and 0700 permissions on Unix),
+/// so another local user cannot prepare or read it.
+fn create_bridge_dir(token: &str) -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join(format!("tuxplayerx-vlc-bridge-{token}"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    }
+    #[cfg(not(unix))]
+    fs::create_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Removes bridge folders left behind by a crash or a forced exit.
+fn remove_stale_bridge_dirs() {
+    let Ok(entries) = fs::read_dir(std::env::temp_dir()) else { return };
+    for entry in entries.flatten() {
+        let is_bridge = entry.file_name().to_string_lossy().starts_with("tuxplayerx-vlc-bridge-");
+        let is_real_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+        if is_bridge && is_real_dir {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 fn stop_vlc_bridge_internal(state: &AppState) -> Result<(), String> {
@@ -216,41 +240,72 @@ fn find_windows_vlc() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.exists())
 }
 
-fn build_external_player_command(command_setting: &str) -> (Command, String) {
+/// Checks the external player setting: a bare player name looked up in PATH, or an absolute path to an
+/// existing local program. Network paths are refused.
+fn validate_external_player_command(command: &str) -> Result<(), String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Ok(());
+    }
+    if security::is_network_path(command) {
+        return Err("The external player cannot be started from a network path.".to_string());
+    }
+    let path = std::path::Path::new(command);
+    if path.components().count() == 1 {
+        // A bare name such as "vlc" or "mpv", resolved through PATH.
+        return if command.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+            Ok(())
+        } else {
+            Err("The external player must be a program name (for example vlc) or the full path to it.".to_string())
+        };
+    }
+    if !path.is_absolute() {
+        return Err("Use the full path to the external player program.".to_string());
+    }
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        _ => Err(format!("The external player '{command}' was not found.")),
+    }
+}
+
+fn build_external_player_command(command_setting: &str) -> Result<(Command, String), String> {
     let trimmed = command_setting.trim();
+    validate_external_player_command(trimmed)?;
 
     #[cfg(target_os = "windows")]
     {
         if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("vlc") || trimmed.eq_ignore_ascii_case("vlc.exe") {
             if let Some(vlc_path) = find_windows_vlc() {
                 let label = vlc_path.display().to_string();
-                return (Command::new(vlc_path), label);
+                return Ok((Command::new(vlc_path), label));
             }
         }
     }
 
     let command = if trimmed.is_empty() { "vlc" } else { trimmed };
-    (Command::new(command), command.to_string())
+    Ok((Command::new(command), command.to_string()))
 }
 
 /// Passes the User-Agent / Referer a playlist asks for on to VLC.
 fn add_vlc_http_headers(cmd: &mut Command, user_agent: Option<&str>, referrer: Option<&str>) {
-    if let Some(user_agent) = user_agent.map(str::trim).filter(|v| !v.is_empty()) {
+    if let Some(user_agent) = user_agent.and_then(security::clean_header_value) {
         cmd.arg(format!("--http-user-agent={user_agent}"));
     }
-    if let Some(referrer) = referrer.map(str::trim).filter(|v| !v.is_empty()) {
+    if let Some(referrer) = referrer.and_then(security::clean_header_value) {
         cmd.arg(format!("--http-referrer={referrer}"));
     }
 }
 
 fn open_player_process(state: State<AppState>, url: String, detached: bool, user_agent: Option<String>, referrer: Option<String>) -> Result<(), String> {
+    // Only network streams reach the player: a playlist line such as `--config=...` or `\\host\share\x`
+    // must not become a player option or a network-share access.
+    let url = security::check_stream_url(&url)?.to_string();
     let settings = state.db.lock().map_err(err)?.get_settings().map_err(err)?;
-    let (mut cmd, label) = build_external_player_command(&settings.external_player_command);
+    let (mut cmd, label) = build_external_player_command(&settings.external_player_command)?;
 
     let mut external_player = state.external_player.lock().map_err(err)?;
-    if let Some(mut child) = external_player.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Some(child) = external_player.take() {
+        kill_child_process_tree(child);
     }
 
     #[cfg(target_os = "windows")]
@@ -286,7 +341,7 @@ fn open_player_process(state: State<AppState>, url: String, detached: bool, user
 /// Prepares a stream for direct playback in the WebView through the local media proxy.
 #[tauri::command]
 async fn prepare_direct_stream(url: String, user_agent: Option<String>, referrer: Option<String>) -> Result<media_proxy::DirectStream, String> {
-    let headers = media_proxy::StreamHeaders { user_agent, referrer };
+    let headers = media_proxy::StreamHeaders { user_agent, referrer, ..Default::default() };
     media_proxy::prepare(&url, &headers).await.map_err(err)
 }
 
@@ -320,33 +375,31 @@ async fn start_vlc_bridge(
     user_agent: Option<String>,
     referrer: Option<String>,
 ) -> Result<String, String> {
+    let url = security::check_stream_url(&url)?.to_string();
     stop_vlc_bridge_internal(&state)?;
     let generation = VLC_BRIDGE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let transcode = transcode.unwrap_or(false);
 
     let settings = state.db.lock().map_err(err)?.get_settings().map_err(err)?;
-    let (mut cmd, label) = build_external_player_command(&settings.external_player_command);
+    let (mut cmd, label) = build_external_player_command(&settings.external_player_command)?;
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("Could not start local playback bridge server: {e}"))?;
     let port = listener.local_addr().map_err(err)?.port();
 
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(err)?
-        .as_millis();
-    let work_dir = std::env::temp_dir().join(format!("tuxplayerx-vlc-bridge-{}-{stamp}", std::process::id()));
-    fs::create_dir_all(&work_dir).map_err(err)?;
+    // The random token names the folder and must prefix every request to the bridge server.
+    let token = security::random_token();
+    let work_dir = create_bridge_dir(&token).map_err(|e| format!("Could not create the bridge folder: {e}"))?;
 
     let index_path = work_dir.join("stream.m3u8");
     let segment_pattern = work_dir.join("stream-########.ts");
     let index = index_path.to_string_lossy().replace('\\', "/");
     let segment = segment_pattern.to_string_lossy().replace('\\', "/");
-    let index_url = format!("http://127.0.0.1:{port}/stream-########.ts");
-    let playback_url = format!("http://127.0.0.1:{port}/stream.m3u8");
+    let index_url = format!("http://127.0.0.1:{port}/{token}/stream-########.ts");
+    let playback_url = format!("http://127.0.0.1:{port}/{token}/stream.m3u8");
 
     let stop_flag = Arc::new(AtomicBool::new(false));
-    start_static_hls_server(listener, work_dir.clone(), stop_flag.clone());
+    start_static_hls_server(listener, work_dir.clone(), token, stop_flag.clone());
 
     #[cfg(target_os = "windows")]
     {
@@ -487,15 +540,18 @@ fn import_playlist_file(app: tauri::AppHandle, name: String, content: String) ->
     Ok(path.display().to_string())
 }
 
-/// Writes a backup JSON file to the Downloads folder (or home as a fallback) and returns its path.
+/// Writes a backup JSON file to the location the user picked in the save dialog and returns its path.
+/// The file contains subscription passwords, so it is only written to a local `.json` path the user chose.
 #[tauri::command(async)]
-fn export_backup(state: State<AppState>) -> Result<String, String> {
+fn export_backup(state: State<AppState>, path: String) -> Result<String, String> {
+    let path = PathBuf::from(path.trim());
+    if security::is_network_path(&path.to_string_lossy()) || !path.is_absolute() {
+        return Err("Choose a folder on this computer for the backup.".to_string());
+    }
+    if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("json")) != Some(true) {
+        return Err("The backup file must have the .json extension.".to_string());
+    }
     let backup = state.db.lock().map_err(err)?.export_backup().map_err(err)?;
-    let folder = dirs_next::download_dir()
-        .or_else(dirs_next::home_dir)
-        .ok_or_else(|| "Could not find the Downloads folder".to_string())?;
-    let file_name = format!("TuxPlayerX-backup-{}.json", chrono::Local::now().format("%Y%m%d-%H%M"));
-    let path = folder.join(file_name);
     fs::write(&path, serde_json::to_string_pretty(&backup).map_err(err)?).map_err(err)?;
     Ok(path.display().to_string())
 }
@@ -610,12 +666,31 @@ fn get_settings(state: State<AppState>) -> Result<AppSettings, String> {
 
 #[tauri::command(async)]
 fn save_settings(state: State<AppState>, settings: AppSettings) -> Result<(), String> {
+    validate_external_player_command(&settings.external_player_command)?;
     state.db.lock().map_err(err)?.save_settings(&settings).map_err(err)
 }
 
+/// Opens a web page in the default browser. Only `https://` addresses are accepted, so this command can
+/// never be used to start programs, open local files or network shares, or call other protocol handlers.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    open::that(url).map_err(err)
+    let parsed = url::Url::parse(url.trim()).map_err(|_| "Invalid web address.".to_string())?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err("Only https:// web addresses can be opened.".to_string());
+    }
+    open::that(parsed.as_str()).map_err(err)
+}
+
+/// Shows a backup file that was just exported in the system file manager (its folder).
+#[tauri::command(async)]
+fn reveal_backup(path: String) -> Result<(), String> {
+    let path = PathBuf::from(path.trim());
+    let is_backup = path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("json")) == Some(true);
+    if !is_backup || !path.is_absolute() || security::is_network_path(&path.to_string_lossy()) || !path.is_file() {
+        return Err("The backup file was not found.".to_string());
+    }
+    let folder = path.parent().ok_or_else(|| "The backup file was not found.".to_string())?;
+    open::that(folder).map_err(err)
 }
 
 #[tauri::command(async)]
@@ -716,9 +791,9 @@ pub fn run() {
     configure_linux_video_decoding();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            remove_stale_bridge_dirs();
             let app_data = app.path().app_data_dir().map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             let db_path = app_data.join("tuxplayerx.sqlite3");
             let db = Database::new(db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
@@ -769,6 +844,7 @@ pub fn run() {
             get_settings,
             save_settings,
             open_url,
+            reveal_backup,
             start_vlc_bridge,
             prepare_direct_stream,
             import_playlist_file,

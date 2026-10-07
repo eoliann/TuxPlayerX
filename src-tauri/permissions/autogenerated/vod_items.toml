@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-vod-items"
+description = "Enables the vod_items command without any pre-configured scope."
+commands.allow = ["vod_items"]
+
+[[permission]]
+identifier = "deny-vod-items"
+description = "Denies the vod_items command without any pre-configured scope."
+commands.deny = ["vod_items"]

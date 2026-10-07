@@ -47,7 +47,9 @@ export const api = {
   stopExternalPlayer: () => invoke<void>('stop_external_player'),
   shutdownPlayback: () => invoke<void>('shutdown_playback'),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
-  exportBackup: () => invoke<string>('export_backup'),
+  /** Writes the backup (it contains passwords) to a path the user picked in the save dialog. */
+  exportBackup: (path: string) => invoke<string>('export_backup', { path }),
+  revealBackup: (path: string) => invoke<void>('reveal_backup', { path }),
   importPlaylistFile: (name: string, content: string) => invoke<string>('import_playlist_file', { name, content }),
   importBackup: (content: string) => invoke<ImportSummary>('import_backup', { content }),
 };

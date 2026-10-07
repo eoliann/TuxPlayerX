@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $ProjectRoot
-npm install
+npm ci
 npm run sync:version
 npm run build
 npm run tauri:build -- --bundles nsis

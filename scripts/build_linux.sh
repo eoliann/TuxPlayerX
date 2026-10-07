@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-npm install
+npm ci
 npm run sync:version
 npm run build
 

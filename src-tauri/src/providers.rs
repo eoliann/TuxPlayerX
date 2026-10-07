@@ -7,6 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
 use crate::models::{Channel, EpgChannelKey, EpgGridItem, EpgNow, EpgProgram, SeriesEpisode, SeriesInfo, SeriesSeason, Subscription, SubscriptionInfo, VodCategory, VodDetails, VodItem, VodPage, VodPlayRequest};
+use crate::security;
 use crate::xtream;
 
 const MAC_USER_AGENT: &str = "Mozilla/5.0 (QtEmbedded; U; Linux; en-US) AppleWebKit/533.3 (KHTML, like Gecko) MAG254 stbapp ver: 4 rev: 2721 Mobile Safari/533.3";
@@ -23,6 +24,9 @@ pub(crate) fn http() -> &'static reqwest::Client {
             .user_agent("TuxPlayerX/2.0")
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(180))
+            // Never send the previous address (which may hold credentials) to the next server.
+            .referer(false)
+            .redirect(security::safe_redirect_policy())
             .build()
             .expect("failed to build HTTP client")
     })
@@ -61,21 +65,34 @@ pub async fn refresh_info(sub: &Subscription) -> anyhow::Result<SubscriptionInfo
     }
 }
 
-async fn read_source(source: &str) -> anyhow::Result<String> {
-    if source.starts_with("http://") || source.starts_with("https://") {
-        let text = http()
-            .get(source)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        Ok(text)
-    } else {
-        let path = local_path(source);
-        let bytes = std::fs::read(&path).map_err(|e| anyhow::anyhow!("Could not read playlist file '{}': {e}", path.display()))?;
-        Ok(decode_text(bytes))
+/// File types accepted for local playlists and guides (security audit S4).
+const PLAYLIST_EXTENSIONS: [&str; 3] = ["m3u", "m3u8", "txt"];
+const GUIDE_EXTENSIONS: [&str; 3] = ["xml", "gz", "xmltv"];
+
+fn is_web_source(source: &str) -> bool {
+    let lower = source.trim().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Reads a local playlist or guide: never a network share, only an existing file of the expected type,
+/// and never more than `limit` bytes.
+fn read_local_source(source: &str, extensions: &[&str], limit: usize) -> anyhow::Result<Vec<u8>> {
+    let path = security::check_local_source_file(&local_path(source), extensions).map_err(anyhow::Error::msg)?;
+    let size = std::fs::metadata(&path)?.len();
+    if size > limit as u64 {
+        anyhow::bail!("The file is {} MB, more than the {} MB allowed.", size / 1_048_576, limit / 1_048_576);
     }
+    std::fs::read(&path).map_err(|e| anyhow::anyhow!("Could not read '{}': {e}", path.display()))
+}
+
+async fn read_source(source: &str) -> anyhow::Result<String> {
+    let bytes = if is_web_source(source) {
+        let response = http().get(source.trim()).send().await?.error_for_status()?;
+        security::read_body_limited(response, security::MAX_PLAYLIST_BYTES).await?
+    } else {
+        read_local_source(source, &PLAYLIST_EXTENSIONS, security::MAX_PLAYLIST_BYTES)?
+    };
+    Ok(decode_text(bytes))
 }
 
 /// Accepts plain paths as well as `file://` URLs (as produced by drag & drop or copied from a browser).
@@ -100,17 +117,24 @@ fn decode_text(bytes: Vec<u8>) -> String {
 
 /// Reads an XMLTV guide from a URL or local file, transparently decompressing `.xml.gz` content.
 async fn read_xmltv_source(source: &str) -> anyhow::Result<String> {
-    let bytes = if source.starts_with("http://") || source.starts_with("https://") {
-        http().get(source).send().await?.error_for_status()?.bytes().await?.to_vec()
+    let bytes = if is_web_source(source) {
+        let response = http().get(source.trim()).send().await?.error_for_status()?;
+        security::read_body_limited(response, security::MAX_GUIDE_DOWNLOAD_BYTES).await?
     } else {
-        std::fs::read(source)?
+        read_local_source(source, &GUIDE_EXTENSIONS, security::MAX_GUIDE_DOWNLOAD_BYTES)?
     };
     if bytes.starts_with(&[0x1f, 0x8b]) {
+        // Decompress with a ceiling, so a tiny "gzip bomb" cannot fill the memory (security audit S8).
         tokio::task::spawn_blocking(move || {
             use std::io::Read;
-            let mut text = String::new();
-            flate2::read::MultiGzDecoder::new(bytes.as_slice()).read_to_string(&mut text)?;
-            anyhow::Ok(text)
+            let mut raw = Vec::new();
+            flate2::read::MultiGzDecoder::new(bytes.as_slice())
+                .take(security::MAX_GUIDE_XML_BYTES as u64 + 1)
+                .read_to_end(&mut raw)?;
+            if raw.len() > security::MAX_GUIDE_XML_BYTES {
+                anyhow::bail!("The TV guide is larger than {} MB once decompressed.", security::MAX_GUIDE_XML_BYTES / 1_048_576);
+            }
+            anyhow::Ok(String::from_utf8(raw).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
         })
         .await?
     } else {
@@ -207,13 +231,23 @@ fn parse_m3u(body: &str) -> Vec<Channel> {
                 }
             }
         } else if !line.starts_with('#') {
+            let (stream_url, pipe_headers) = split_pipe_headers(line);
+            let (mut user_agent, mut referrer) = std::mem::take(&mut current_headers);
+            // Only network streams become channels: a line such as `--config=...`, `file:///...` or
+            // `\\server\share\x.ts` is dropped (security audit S3).
+            if !security::is_allowed_stream_url(&stream_url) {
+                current_name = None;
+                current_logo = None;
+                current_group = None;
+                current_epg_id = None;
+                current_catchup = (None, None, None);
+                continue;
+            }
             let idx = channels.len() + 1;
             let name = current_name.take().unwrap_or_else(|| format!("Channel {idx}"));
             let group = current_group.take();
-            let (stream_url, pipe_headers) = split_pipe_headers(line);
-            let (mut user_agent, mut referrer) = std::mem::take(&mut current_headers);
-            user_agent = pipe_headers.0.or(user_agent);
-            referrer = pipe_headers.1.or(referrer);
+            user_agent = pipe_headers.0.or(user_agent).and_then(|v| security::clean_header_value(&v));
+            referrer = pipe_headers.1.or(referrer).and_then(|v| security::clean_header_value(&v));
             channels.push(Channel {
                 id: stable_m3u_id(&name, group.as_deref(), &mut seen_ids),
                 name,
@@ -296,7 +330,7 @@ async fn refresh_m3u_info(sub: &Subscription) -> anyhow::Result<SubscriptionInfo
     let base = format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default());
     let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
     let api_url = format!("{base}{port}/player_api.php?username={}&password={}", urlencoding::encode(&username), urlencoding::encode(&password));
-    let json: Value = http().get(api_url).send().await?.error_for_status()?.json().await?;
+    let json: Value = security::read_json_limited(http().get(api_url).send().await?.error_for_status()?).await?;
     let user_info = json.get("user_info").unwrap_or(&json);
     let exp = user_info.get("exp_date").and_then(value_to_string).and_then(format_exp_date);
     let active = user_info.get("active_cons").or_else(|| user_info.get("active_connections")).and_then(value_to_i64);
@@ -363,7 +397,15 @@ fn mac_client(mac: &str) -> anyhow::Result<reqwest::Client> {
     headers.insert(CONNECTION, HeaderValue::from_static("Keep-Alive"));
     headers.insert("X-User-Agent", HeaderValue::from_static("Model: MAG254; Link: Ethernet"));
     headers.insert(COOKIE, HeaderValue::from_str(&format!("mac={}; stb_lang=en; timezone=Europe/Bucharest", mac))?);
-    Ok(reqwest::Client::builder().default_headers(headers).cookie_store(true).build()?)
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .cookie_store(true)
+        // Portals that accept the connection and never answer must not hang the app (security audit S8).
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60))
+        .referer(false)
+        .redirect(security::safe_redirect_policy())
+        .build()?)
 }
 
 fn js_payload(payload: &Value) -> &Value {
@@ -391,7 +433,7 @@ async fn mac_handshake(sub: &Subscription) -> anyhow::Result<MacPortalSession> {
 
         match response {
             Ok(resp) => match resp.error_for_status() {
-                Ok(ok_resp) => match ok_resp.json::<Value>().await {
+                Ok(ok_resp) => match security::read_json_limited::<Value>(ok_resp).await {
                     Ok(json) => {
                         let js = js_payload(&json);
                         if let Some(token) = js.get("token").or_else(|| js.get("access_token")).and_then(value_to_string) {
@@ -463,10 +505,8 @@ async fn mac_request(session: &MacPortalSession, params: Vec<(String, String)>) 
         .query(&query)
         .send()
         .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
-    Ok(json)
+        .error_for_status()?;
+    security::read_json_limited(json).await
 }
 
 async fn mac_get_profile(session: &MacPortalSession) -> anyhow::Result<Value> {
@@ -698,6 +738,9 @@ pub async fn resolve_catchup_stream(channel: &Channel, start: DateTime<Utc>, sto
 
 const VOD_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 
+/// Categories of movies/series kept in memory at the same time.
+const VOD_CACHE_MAX_ENTRIES: usize = 20;
+
 fn vod_cache() -> &'static StdMutex<HashMap<String, (Instant, Vec<VodItem>)>> {
     static CACHE: OnceLock<StdMutex<HashMap<String, (Instant, Vec<VodItem>)>>> = OnceLock::new();
     CACHE.get_or_init(|| StdMutex::new(HashMap::new()))
@@ -734,6 +777,11 @@ pub async fn vod_items(sub: &Subscription, kind: &str, category_id: &str, page: 
     }
     let items = require_xtream(sub)?.items(kind, category_id).await?;
     if let Ok(mut cache) = vod_cache().lock() {
+        cache.retain(|_, (loaded, _)| loaded.elapsed() < VOD_CACHE_TTL);
+        while cache.len() >= VOD_CACHE_MAX_ENTRIES {
+            let Some(oldest) = cache.iter().min_by_key(|(_, (loaded, _))| *loaded).map(|(key, _)| key.clone()) else { break };
+            cache.remove(&oldest);
+        }
         cache.insert(key, (Instant::now(), items.clone()));
     }
     Ok(VodPage { items, has_more: false })
@@ -890,7 +938,7 @@ async fn mac_vod_items(sub: &Subscription, kind: &str, category_id: &str, page: 
             })
         })
         .collect();
-    Ok(VodPage { items, has_more: (page as i64) * per_page < total })
+    Ok(VodPage { items, has_more: (page as i64).saturating_mul(per_page) < total })
 }
 
 /// One `<programme>` entry from the XMLTV file, kept in memory between channel switches.
@@ -1173,7 +1221,7 @@ fn entry_times(entry: &EpgEntry, timezone_mode: &str, manual_offset_minutes: i64
         (entry.start_auto, entry.stop_auto)
     };
     if mode == "manual" && manual_offset_minutes != 0 {
-        let offset = ChronoDuration::minutes(manual_offset_minutes);
+        let offset = ChronoDuration::minutes(manual_offset_minutes.clamp(-26 * 60, 26 * 60));
         return Some((start + offset, stop.map(|stop| stop + offset)));
     }
     Some((start, stop))
@@ -1669,7 +1717,7 @@ mod bench {
             println!("live channels:");
             let step = (channels.len() / 4).max(1);
             for channel in channels.iter().step_by(step).take(4) {
-                let headers = StreamHeaders { user_agent: channel.user_agent.clone(), referrer: channel.referrer.clone() };
+                let headers = StreamHeaders { user_agent: channel.user_agent.clone(), referrer: channel.referrer.clone(), ..Default::default() };
                 probe(&channel.name, &channel.stream_url, &headers).await;
             }
 

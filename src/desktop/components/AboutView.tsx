@@ -17,7 +17,8 @@ export function AboutView({ onStatus }: Props) {
 
   const open = async (url?: string) => {
     if (!url) return;
-    await api.openUrl(url).catch(() => window.open(url, '_blank'));
+    // Links always open in the system browser, never inside the app window.
+    await api.openUrl(url).catch((err) => onStatus(String(err)));
   };
 
   return (

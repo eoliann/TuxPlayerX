@@ -7,11 +7,10 @@
 //! Nothing is decoded or re-encoded here; bytes are passed through as they arrive.
 
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE, REFERER, USER_AGENT};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use url::Url;
@@ -28,6 +27,9 @@ const PROBE_BYTES: usize = 1024;
 pub struct StreamHeaders {
     pub user_agent: Option<String>,
     pub referrer: Option<String>,
+    /// Set for addresses listed by a playlist that came from a public server: they may not point to
+    /// a local or private address.
+    pub public_parent: bool,
 }
 
 /// A stream prepared for the embedded player: the local proxy URL and how to play it.
@@ -52,6 +54,10 @@ fn client() -> &'static reqwest::Client {
             .user_agent(DEFAULT_USER_AGENT)
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(20))
+            // Never pass the previous address (it may hold credentials) to another server; no https→http
+            // downgrade and no redirect from a public server into the local network.
+            .referer(false)
+            .redirect(crate::security::safe_redirect_policy())
             .build()
             .expect("failed to build media proxy HTTP client")
     })
@@ -64,14 +70,18 @@ async fn proxy() -> anyhow::Result<&'static Arc<Proxy>> {
     PROXY
         .get_or_try_init(|| async {
             let listener = TcpListener::bind("127.0.0.1:0").await?;
-            let proxy = Arc::new(Proxy { port: listener.local_addr()?.port(), token: new_token() });
+            let proxy = Arc::new(Proxy { port: listener.local_addr()?.port(), token: crate::security::random_token() });
             let shared = Arc::clone(&proxy);
+            // A player needs a handful of connections; the cap keeps a misbehaving client from exhausting the app.
+            let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
             tauri::async_runtime::spawn(async move {
                 loop {
+                    let Ok(permit) = Arc::clone(&slots).acquire_owned().await else { break };
                     if let Ok((stream, _)) = listener.accept().await {
                         let proxy = Arc::clone(&shared);
                         tauri::async_runtime::spawn(async move {
                             let _ = handle(stream, &proxy).await;
+                            drop(permit);
                         });
                     }
                 }
@@ -79,18 +89,6 @@ async fn proxy() -> anyhow::Result<&'static Arc<Proxy>> {
             anyhow::Ok(proxy)
         })
         .await
-}
-
-fn new_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    // RandomState is seeded from the operating system's random source.
-    let random = || std::collections::hash_map::RandomState::new().build_hasher().finish();
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
-    let mut hasher = Sha256::new();
-    hasher.update(random().to_le_bytes());
-    hasher.update(random().to_le_bytes());
-    hasher.update(nanos.to_le_bytes());
-    format!("{:x}", hasher.finalize())[..24].to_string()
 }
 
 impl Proxy {
@@ -103,6 +101,9 @@ impl Proxy {
         }
         if let Some(referrer) = headers.referrer.as_deref().filter(|v| !v.is_empty()) {
             query.append_pair("ref", referrer);
+        }
+        if headers.public_parent {
+            query.append_pair("pp", "1");
         }
         format!("http://127.0.0.1:{}/{}/{name}?{}", self.port, self.token, query.finish())
     }
@@ -142,10 +143,10 @@ fn sniff_format(content_type: &str, bytes: &[u8]) -> Option<&'static str> {
 
 async fn send(target: &str, headers: &StreamHeaders, range: Option<&str>) -> anyhow::Result<reqwest::Response> {
     let mut request = client().get(target);
-    if let Some(ua) = headers.user_agent.as_deref().filter(|v| !v.is_empty()) {
+    if let Some(ua) = headers.user_agent.as_deref().and_then(crate::security::clean_header_value) {
         request = request.header(USER_AGENT, ua);
     }
-    if let Some(referrer) = headers.referrer.as_deref().filter(|v| !v.is_empty()) {
+    if let Some(referrer) = headers.referrer.as_deref().and_then(crate::security::clean_header_value) {
         request = request.header(REFERER, referrer);
     }
     if let Some(range) = range {
@@ -188,12 +189,22 @@ pub async fn prepare(target: &str, headers: &StreamHeaders) -> anyhow::Result<Di
     Ok(DirectStream { url: proxy.url_for(target, headers, name), format: format.to_string() })
 }
 
+/// Most connections the proxy serves at the same time.
+const MAX_CONNECTIONS: usize = 64;
+/// Longest time a client may take to send its request head.
+const HEAD_DEADLINE: Duration = Duration::from_secs(15);
+/// Longest time one write to the player may block (a player that stopped reading is dropped).
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Largest rewritten HLS playlist and number of lines handled.
+const MAX_REWRITTEN_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PLAYLIST_LINES: usize = 200_000;
+
 /// Reads the request head (request line and headers) sent by the WebView.
 async fn read_head(stream: &mut TcpStream) -> anyhow::Result<String> {
     let mut buffer = Vec::with_capacity(2048);
     let mut chunk = [0_u8; 2048];
     loop {
-        let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut chunk)).await??;
+        let read = stream.read(&mut chunk).await?;
         if read == 0 {
             break;
         }
@@ -205,47 +216,80 @@ async fn read_head(stream: &mut TcpStream) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
-const CORS_HEADERS: &str = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: *\r\nAccess-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges\r\nCache-Control: no-cache\r\nConnection: close\r\n";
+/// Writes to the player, giving up when it stops reading.
+async fn write_all(stream: &mut TcpStream, bytes: &[u8]) -> anyhow::Result<()> {
+    tokio::time::timeout(WRITE_TIMEOUT, stream.write_all(bytes)).await??;
+    Ok(())
+}
 
-async fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) -> std::io::Result<()> {
-    let head = format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{CORS_HEADERS}\r\n", body.len());
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(body).await
+/// CORS headers (only the app's own origin may read the responses) and the common response headers.
+fn common_headers(origin: Option<&str>) -> String {
+    let cors = crate::security::cors_header_for(origin);
+    let allow = if cors.is_empty() {
+        String::new()
+    } else {
+        "Access-Control-Allow-Headers: Range\r\nAccess-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges\r\n".to_string()
+    };
+    format!("{cors}{allow}Cache-Control: no-cache\r\nConnection: close\r\n")
+}
+
+async fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8], origin: Option<&str>) -> anyhow::Result<()> {
+    let head = format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{}\r\n", body.len(), common_headers(origin));
+    write_all(stream, head.as_bytes()).await?;
+    write_all(stream, body).await
 }
 
 async fn handle(mut stream: TcpStream, proxy: &Proxy) -> anyhow::Result<()> {
-    let head = read_head(&mut stream).await?;
-    let mut lines = head.split("\r\n");
-    let mut request_line = lines.next().unwrap_or_default().split_whitespace();
+    let head = tokio::time::timeout(HEAD_DEADLINE, read_head(&mut stream)).await??;
+    let header = |wanted: &str| {
+        head.split("\r\n")
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.trim().eq_ignore_ascii_case(wanted))
+            .map(|(_, value)| value.trim().to_string())
+    };
+    let mut request_line = head.split("\r\n").next().unwrap_or_default().split_whitespace();
     let method = request_line.next().unwrap_or_default().to_ascii_uppercase();
     let path = request_line.next().unwrap_or("/");
-    let range = lines
-        .filter_map(|line| line.split_once(':'))
-        .find(|(name, _)| name.trim().eq_ignore_ascii_case("range"))
-        .map(|(_, value)| value.trim().to_string());
+    let range = header("range");
+    let origin = header("origin");
+    let origin = origin.as_deref();
 
+    // Only requests addressed to this proxy (not to another host name resolving to 127.0.0.1, as in DNS
+    // rebinding) and carrying the random token are served.
+    let host_ok = header("host").map(|host| host == format!("127.0.0.1:{}", proxy.port)).unwrap_or(false);
+    if !host_ok {
+        return respond(&mut stream, "403 Forbidden", "text/plain", b"Forbidden", None).await;
+    }
     if method == "OPTIONS" {
-        stream.write_all(format!("HTTP/1.1 204 No Content\r\n{CORS_HEADERS}\r\n").as_bytes()).await?;
-        return Ok(());
+        return write_all(&mut stream, format!("HTTP/1.1 204 No Content\r\n{}\r\n", common_headers(origin)).as_bytes()).await;
     }
 
     let request_url = Url::parse(&format!("http://127.0.0.1{path}"))?;
-    if request_url.path_segments().and_then(|mut segments| segments.next()) != Some(proxy.token.as_str()) {
-        respond(&mut stream, "403 Forbidden", "text/plain", b"Forbidden").await?;
-        return Ok(());
+    let given_token = request_url.path_segments().and_then(|mut segments| segments.next()).unwrap_or_default();
+    if !crate::security::constant_time_eq(given_token.as_bytes(), proxy.token.as_bytes()) {
+        return respond(&mut stream, "403 Forbidden", "text/plain", b"Forbidden", origin).await;
     }
     let query = |key: &str| request_url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned());
     let Some(target) = query("u") else {
-        respond(&mut stream, "400 Bad Request", "text/plain", b"Missing stream URL").await?;
-        return Ok(());
+        return respond(&mut stream, "400 Bad Request", "text/plain", b"Missing stream URL", origin).await;
     };
-    let headers = StreamHeaders { user_agent: query("ua"), referrer: query("ref") };
+    let target_url = Url::parse(&target).ok().filter(|url| matches!(url.scheme(), "http" | "https"));
+    let Some(target_url) = target_url else {
+        return respond(&mut stream, "400 Bad Request", "text/plain", b"Unsupported stream URL", origin).await;
+    };
+    let public_parent = query("pp").as_deref() == Some("1");
+    // A playlist from a public server may not send the app into the local network (security audit S12).
+    if public_parent && target_url.host_str().map(crate::security::is_private_host).unwrap_or(true) {
+        return respond(&mut stream, "403 Forbidden", "text/plain", b"Local address refused", origin).await;
+    }
+    let headers = StreamHeaders { user_agent: query("ua"), referrer: query("ref"), public_parent };
 
     let mut response = match send(&target, &headers, range.as_deref()).await {
         Ok(response) => response,
         Err(e) => {
-            respond(&mut stream, "502 Bad Gateway", "text/plain", e.to_string().as_bytes()).await?;
-            return Ok(());
+            let message = crate::security::redact(&e.to_string());
+            return respond(&mut stream, "502 Bad Gateway", "text/plain", message.as_bytes(), origin).await;
         }
     };
     let status = response.status();
@@ -264,10 +308,9 @@ async fn handle(mut stream: TcpStream, proxy: &Proxy) -> anyhow::Result<()> {
             }
         }
         let text = String::from_utf8_lossy(&body);
-        let rewritten = rewrite_playlist(&text, &final_url, proxy, &headers);
+        let rewritten = rewrite_playlist(&text, &final_url, proxy, &headers)?;
         let body = if method == "HEAD" { Vec::new() } else { rewritten.into_bytes() };
-        respond(&mut stream, &status_line, "application/vnd.apple.mpegurl", &body).await?;
-        return Ok(());
+        return respond(&mut stream, &status_line, "application/vnd.apple.mpegurl", &body, origin).await;
     }
 
     let mut head = format!("HTTP/1.1 {status_line}\r\n");
@@ -280,32 +323,40 @@ async fn handle(mut stream: TcpStream, proxy: &Proxy) -> anyhow::Result<()> {
             head.push_str(&format!("{name}: {value}\r\n"));
         }
     }
-    head.push_str(CORS_HEADERS);
+    head.push_str(&common_headers(origin));
     head.push_str("\r\n");
-    stream.write_all(head.as_bytes()).await?;
+    write_all(&mut stream, head.as_bytes()).await?;
     if method == "HEAD" {
         return Ok(());
     }
 
     // Pass the bytes through as they arrive. When the player goes away the write fails and the
     // upstream connection is dropped at once, which matters for providers that allow one connection.
-    stream.write_all(&first).await?;
+    write_all(&mut stream, &first).await?;
     while let Some(chunk) = response.chunk().await? {
-        stream.write_all(&chunk).await?;
+        write_all(&mut stream, &chunk).await?;
     }
     Ok(())
 }
 
 /// Points every URI in an HLS playlist (segments, variant playlists, keys, maps) at the proxy,
 /// resolving relative URIs against the playlist's final URL after redirects.
-fn rewrite_playlist(text: &str, base: &Url, proxy: &Proxy, headers: &StreamHeaders) -> String {
+fn rewrite_playlist(text: &str, base: &Url, proxy: &Proxy, headers: &StreamHeaders) -> anyhow::Result<String> {
+    // URIs listed by a playlist from a public server are marked, so the proxy refuses local addresses.
+    let child_headers = StreamHeaders {
+        public_parent: headers.public_parent || !base.host_str().map(crate::security::is_private_host).unwrap_or(false),
+        ..headers.clone()
+    };
     let proxied = |uri: &str| -> Option<String> {
         let absolute = base.join(uri.trim()).ok()?;
         let name = if absolute.path().to_ascii_lowercase().ends_with(".m3u8") { "stream.m3u8" } else { "media" };
-        Some(proxy.url_for(absolute.as_str(), headers, name))
+        Some(proxy.url_for(absolute.as_str(), &child_headers, name))
     };
     let mut out = String::with_capacity(text.len() * 2);
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
+        if index >= MAX_PLAYLIST_LINES || out.len() > MAX_REWRITTEN_BYTES {
+            anyhow::bail!("Playlist too large");
+        }
         let trimmed = line.trim();
         if trimmed.is_empty() {
             out.push_str(line);
@@ -316,7 +367,7 @@ fn rewrite_playlist(text: &str, base: &Url, proxy: &Proxy, headers: &StreamHeade
         }
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
 /// Rewrites `URI="..."` attributes in tags such as #EXT-X-KEY, #EXT-X-MEDIA and #EXT-X-MAP.
@@ -399,15 +450,18 @@ mod tests {
     fn proxies_redirected_playlists_and_segments_with_cors() {
         let upstream = fake_upstream();
         tauri::async_runtime::block_on(async move {
-            let headers = StreamHeaders { user_agent: Some("Test UA".into()), referrer: None };
+            let headers = StreamHeaders { user_agent: Some("Test UA".into()), ..Default::default() };
             // No extension in the URL: the format is probed (through the redirect).
             let direct = prepare(&format!("http://127.0.0.1:{upstream}/live/ch"), &headers).await.unwrap();
             assert_eq!(direct.format, "hls");
             assert!(direct.url.contains("/stream.m3u8?"), "{}", direct.url);
 
             let plain = reqwest::Client::new();
-            let playlist = plain.get(&direct.url).send().await.unwrap();
-            assert_eq!(playlist.headers()["access-control-allow-origin"], "*");
+            // CORS is granted to the app's own origin only.
+            let foreign = plain.get(&direct.url).header("Origin", "https://evil.example").send().await.unwrap();
+            assert!(foreign.headers().get("access-control-allow-origin").is_none());
+            let playlist = plain.get(&direct.url).header("Origin", "http://tauri.localhost").send().await.unwrap();
+            assert_eq!(playlist.headers()["access-control-allow-origin"], "http://tauri.localhost");
             let text = playlist.text().await.unwrap();
             let segment_url = text.lines().find(|line| line.starts_with("http://127.0.0.1")).expect(&text).to_string();
             assert!(segment_url.contains("cdn%2Fch%2Fseg1.ts"), "{segment_url}");
@@ -422,6 +476,13 @@ mod tests {
             let proxy_port = Url::parse(&direct.url).unwrap().port().unwrap();
             let forbidden = format!("http://127.0.0.1:{proxy_port}/wrongtoken/stream.m3u8?u=http%3A%2F%2Fexample.com%2F");
             assert_eq!(plain.get(&forbidden).send().await.unwrap().status(), 403);
+            // Another host name pointing at 127.0.0.1 (DNS rebinding) is refused even with the token.
+            let rebound = plain.get(&direct.url).header(reqwest::header::HOST, "evil.example").send().await.unwrap();
+            assert_eq!(rebound.status(), 403);
+            // An address listed by a public playlist may not lead into the local network.
+            let token = Url::parse(&direct.url).unwrap().path_segments().unwrap().next().unwrap().to_string();
+            let local = format!("http://127.0.0.1:{proxy_port}/{token}/media?u=http%3A%2F%2F127.0.0.1%3A{upstream}%2Fcdn%2Fch%2Fseg1.ts&pp=1");
+            assert_eq!(plain.get(&local).send().await.unwrap().status(), 403);
         });
     }
 
@@ -429,15 +490,21 @@ mod tests {
     fn rewrites_playlist_uris_through_the_proxy() {
         let proxy = Proxy { port: 1234, token: "tok".into() };
         let base = Url::parse("http://cdn.example/live/ch1/index.m3u8").unwrap();
-        let headers = StreamHeaders { user_agent: Some("UA 1".into()), referrer: None };
+        let headers = StreamHeaders { user_agent: Some("UA 1".into()), ..Default::default() };
         let text = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\",IV=0x1\n#EXTINF:6,\nseg1.ts\n\nhttp://other.example/seg2.ts\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"audio/en.m3u8\"\n";
-        let out = rewrite_playlist(text, &base, &proxy, &headers);
+        let out = rewrite_playlist(text, &base, &proxy, &headers).unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "#EXTM3U");
-        assert!(lines[1].starts_with("#EXT-X-KEY:METHOD=AES-128,URI=\"http://127.0.0.1:1234/tok/media?u=http%3A%2F%2Fcdn.example%2Flive%2Fch1%2Fkey.bin&ua=UA+1\",IV=0x1"), "{}", lines[1]);
-        assert_eq!(lines[3], "http://127.0.0.1:1234/tok/media?u=http%3A%2F%2Fcdn.example%2Flive%2Fch1%2Fseg1.ts&ua=UA+1");
+        assert!(lines[1].starts_with("#EXT-X-KEY:METHOD=AES-128,URI=\"http://127.0.0.1:1234/tok/media?u=http%3A%2F%2Fcdn.example%2Flive%2Fch1%2Fkey.bin&ua=UA+1&pp=1\",IV=0x1"), "{}", lines[1]);
+        assert_eq!(lines[3], "http://127.0.0.1:1234/tok/media?u=http%3A%2F%2Fcdn.example%2Flive%2Fch1%2Fseg1.ts&ua=UA+1&pp=1");
         assert_eq!(lines[4], "");
-        assert_eq!(lines[5], "http://127.0.0.1:1234/tok/media?u=http%3A%2F%2Fother.example%2Fseg2.ts&ua=UA+1");
+        assert_eq!(lines[5], "http://127.0.0.1:1234/tok/media?u=http%3A%2F%2Fother.example%2Fseg2.ts&ua=UA+1&pp=1");
         assert!(lines[6].contains("/tok/stream.m3u8?u=http%3A%2F%2Fcdn.example%2Flive%2Fch1%2Faudio%2Fen.m3u8"), "{}", lines[6]);
+        // A playlist from a local server (e.g. a home IPTV server) does not mark its segments.
+        let local = Url::parse("http://192.168.1.10/live/index.m3u8").unwrap();
+        let out = rewrite_playlist("#EXTM3U
+seg.ts
+", &local, &proxy, &StreamHeaders::default()).unwrap();
+        assert!(!out.contains("pp=1"), "{out}");
     }
 }

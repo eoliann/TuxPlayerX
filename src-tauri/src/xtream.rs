@@ -62,14 +62,15 @@ impl XtreamAccount {
             query.push(("action", action));
         }
         query.extend_from_slice(extra);
-        Ok(http()
+        let response = http()
             .get(format!("{}/player_api.php", self.base))
             .query(&query)
             .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?)
+            .await
+            .map_err(|e| e.without_url())?
+            .error_for_status()
+            .map_err(|e| e.without_url())?;
+        crate::security::read_json_limited(response).await
     }
 
     fn path_part(&self) -> String {
@@ -104,7 +105,8 @@ impl XtreamAccount {
             (Some(utc), Some(local)) => {
                 // Round to the nearest 15 minutes to absorb request latency.
                 let minutes = ((local - utc.naive_utc()).num_seconds() as f64 / 900.0).round() as i64 * 15;
-                ChronoDuration::minutes(minutes)
+                // Real time zones are within ±14 h; anything beyond ±26 h is a broken server answer.
+                if minutes.abs() > 26 * 60 { local_offset() } else { ChronoDuration::minutes(minutes) }
             }
             _ => local_offset(),
         }
@@ -187,7 +189,7 @@ impl XtreamAccount {
         let text = |v: &Value, keys: &[&str]| keys.iter().find_map(|k| v.get(*k).and_then(value_to_string)).filter(|s| !s.trim().is_empty());
 
         // Episodes come either as {"1": [...], "2": [...]} or as a flat array with a "season" field.
-        let mut by_season: Vec<(i64, Vec<SeriesEpisode>)> = Vec::new();
+        let mut by_season: std::collections::BTreeMap<i64, Vec<SeriesEpisode>> = std::collections::BTreeMap::new();
         let mut push = |season: i64, episode: &Value| {
             let Some(id) = text(episode, &["id"]) else { return };
             let ep_info = episode.get("info").cloned().unwrap_or(Value::Null);
@@ -202,10 +204,7 @@ impl XtreamAccount {
                 poster: text(&ep_info, &["movie_image", "cover_big"]),
                 cmd: None,
             };
-            match by_season.iter_mut().find(|(n, _)| *n == season) {
-                Some((_, list)) => list.push(entry),
-                None => by_season.push((season, vec![entry])),
-            }
+            by_season.entry(season).or_default().push(entry);
         };
         match json.get("episodes") {
             Some(Value::Object(map)) => {
@@ -232,7 +231,6 @@ impl XtreamAccount {
             .flatten()
             .filter_map(|s| Some((s.get("season_number").and_then(value_to_i64)?, s.get("name").and_then(value_to_string)?)))
             .collect();
-        by_season.sort_by_key(|(n, _)| *n);
         let seasons = by_season
             .into_iter()
             .map(|(number, mut episodes)| {
