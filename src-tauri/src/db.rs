@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
+use crate::secret_store;
 use crate::models::{AppSettings, BackupFile, BackupSubscription, Channel, ImportSummary, Subscription, SubscriptionInfo};
 
 /// Default XMLTV guide for Romanian channels (compressed, ~2 MB).
@@ -24,7 +25,40 @@ impl Database {
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
         let db = Self { conn };
         db.init()?;
+        db.protect_stored_credentials()?;
+        secret_store::restrict_permissions(&path);
         Ok(db)
+    }
+
+    /// Encrypts credentials written by older versions in plain text (security audit S10) and drops
+    /// plain cached channel lists, which are downloaded again.
+    fn protect_stored_credentials(&self) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare("SELECT id, url, portal_url, mac_address, username, password FROM subscriptions")?;
+        let rows: Vec<(i64, [Option<String>; 5])> = stmt
+            .query_map([], |row| Ok((row.get(0)?, [row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?])))?
+            .collect::<Result<_, _>>()?;
+        drop(stmt);
+        for (id, values) in rows {
+            if values.iter().flatten().all(|value| secret_store::is_protected(value)) {
+                continue;
+            }
+            let protected: Vec<Option<String>> = values.iter().map(|value| value.as_deref().map(secret_store::protect)).collect();
+            self.conn.execute(
+                "UPDATE subscriptions SET url=?1, portal_url=?2, mac_address=?3, username=?4, password=?5 WHERE id=?6",
+                params![protected[0], protected[1], protected[2], protected[3], protected[4], id],
+            )?;
+        }
+        let payloads: Vec<(i64, String)> = self
+            .conn
+            .prepare("SELECT subscription_id, payload FROM channel_cache")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        for (id, payload) in payloads {
+            if !secret_store::is_protected(&payload) {
+                self.conn.execute("DELETE FROM channel_cache WHERE subscription_id = ?1", params![id])?;
+            }
+        }
+        Ok(())
     }
 
     fn init(&self) -> anyhow::Result<()> {
@@ -141,11 +175,11 @@ impl Database {
                 params![
                     sub.name,
                     sub.sub_type,
-                    sub.url,
-                    sub.portal_url,
-                    sub.mac_address,
-                    sub.username,
-                    sub.password,
+                    secret_store::protect_opt(&sub.url),
+                    secret_store::protect_opt(&sub.portal_url),
+                    secret_store::protect_opt(&sub.mac_address),
+                    secret_store::protect_opt(&sub.username),
+                    secret_store::protect_opt(&sub.password),
                     if sub.is_default { 1 } else { 0 },
                     sub.expires_at,
                     sub.active_connections,
@@ -161,11 +195,11 @@ impl Database {
                 params![
                     sub.name,
                     sub.sub_type,
-                    sub.url,
-                    sub.portal_url,
-                    sub.mac_address,
-                    sub.username,
-                    sub.password,
+                    secret_store::protect_opt(&sub.url),
+                    secret_store::protect_opt(&sub.portal_url),
+                    secret_store::protect_opt(&sub.mac_address),
+                    secret_store::protect_opt(&sub.username),
+                    secret_store::protect_opt(&sub.password),
                     if sub.is_default { 1 } else { 0 },
                     sub.expires_at,
                     sub.active_connections,
@@ -197,7 +231,7 @@ impl Database {
         if Utc::now().timestamp() - fetched_at > max_age_secs {
             return Ok(None);
         }
-        Ok(serde_json::from_str(&payload).ok().map(|channels| (channels, fetched_at)))
+        Ok(serde_json::from_str(&secret_store::unprotect(&payload)).ok().map(|channels| (channels, fetched_at)))
     }
 
     pub fn store_cached_channels(&self, subscription_id: i64, channels: &[Channel]) -> anyhow::Result<i64> {
@@ -205,7 +239,8 @@ impl Database {
         self.conn.execute(
             "INSERT INTO channel_cache(subscription_id, payload, fetched_at) VALUES(?1, ?2, ?3)
              ON CONFLICT(subscription_id) DO UPDATE SET payload=excluded.payload, fetched_at=excluded.fetched_at",
-            params![subscription_id, serde_json::to_string(channels)?, now],
+            // Stream URLs embed credentials, so the cached list is stored encrypted like the subscription.
+            params![subscription_id, secret_store::protect(&serde_json::to_string(channels)?), now],
         )?;
         Ok(now)
     }
@@ -421,11 +456,11 @@ fn row_to_subscription(row: &rusqlite::Row<'_>) -> rusqlite::Result<Subscription
         id: row.get("id")?,
         name: row.get("name")?,
         sub_type: row.get("type")?,
-        url: row.get("url")?,
-        portal_url: row.get("portal_url")?,
-        mac_address: row.get("mac_address")?,
-        username: row.get("username")?,
-        password: row.get("password")?,
+        url: secret_store::unprotect_opt(row.get("url")?),
+        portal_url: secret_store::unprotect_opt(row.get("portal_url")?),
+        mac_address: secret_store::unprotect_opt(row.get("mac_address")?),
+        username: secret_store::unprotect_opt(row.get("username")?),
+        password: secret_store::unprotect_opt(row.get("password")?),
         is_default: row.get::<_, i64>("is_default")? == 1,
         expires_at: row.get("expires_at")?,
         active_connections: row.get("active_connections")?,
@@ -443,6 +478,35 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tuxplayerx-db-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         (Database::new(dir.join("test.sqlite3")).unwrap(), dir)
+    }
+
+    #[test]
+    fn credentials_are_stored_protected_and_old_plain_rows_are_migrated() {
+        let (db, dir) = temp_db("secrets");
+        let mut sub = m3u("A", "http://h/get.php?username=u&password=secret1", true);
+        sub.password = Some("secret2".into());
+        let id = db.save_subscription(&sub).unwrap();
+        db.store_cached_channels(id, &[]).unwrap();
+        let raw: (String, String) = db.conn
+            .query_row("SELECT url, password FROM subscriptions WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        #[cfg(windows)]
+        assert!(!raw.0.contains("secret1") && !raw.1.contains("secret2"), "{raw:?}");
+        let loaded = db.get_subscription(id).unwrap().unwrap();
+        assert_eq!(loaded.url.as_deref(), Some("http://h/get.php?username=u&password=secret1"));
+        assert_eq!(loaded.password.as_deref(), Some("secret2"));
+        assert!(db.get_cached_channels(id, 3600).unwrap().is_some());
+
+        // A database written by an older version (plain text) is encrypted when it is opened.
+        db.conn.execute("UPDATE subscriptions SET password='plain3' WHERE id=?1", params![id]).unwrap();
+        drop(db);
+        let reopened = Database::new(dir.join("test.sqlite3")).unwrap();
+        let raw: String = reopened.conn.query_row("SELECT password FROM subscriptions WHERE id=?1", params![id], |r| r.get(0)).unwrap();
+        #[cfg(windows)]
+        assert!(raw.starts_with("dpapi:"), "{raw}");
+        assert_eq!(reopened.get_subscription(id).unwrap().unwrap().password.as_deref(), Some("plain3"));
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn m3u(name: &str, url: &str, is_default: bool) -> Subscription {

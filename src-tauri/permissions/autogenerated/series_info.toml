@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-series-info"
+description = "Enables the series_info command without any pre-configured scope."
+commands.allow = ["series_info"]
+
+[[permission]]
+identifier = "deny-series-info"
+description = "Denies the series_info command without any pre-configured scope."
+commands.deny = ["series_info"]

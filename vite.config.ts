@@ -15,7 +15,8 @@ export default defineConfig({
   server: {
     port: 3000,
     strictPort: true,
-    host: '0.0.0.0',
+    // Only this computer; Android device development sets TAURI_DEV_HOST to the LAN address.
+    host: process.env.TAURI_DEV_HOST || 'localhost',
     watch: {
       ignored: ['**/src-tauri/**'],
     },

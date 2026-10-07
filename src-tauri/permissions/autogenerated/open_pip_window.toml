@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-pip-window"
+description = "Enables the open_pip_window command without any pre-configured scope."
+commands.allow = ["open_pip_window"]
+
+[[permission]]
+identifier = "deny-open-pip-window"
+description = "Denies the open_pip_window command without any pre-configured scope."
+commands.deny = ["open_pip_window"]

@@ -2,6 +2,7 @@ mod db;
 mod media_proxy;
 mod models;
 mod providers;
+mod secret_store;
 mod security;
 mod xtream;
 

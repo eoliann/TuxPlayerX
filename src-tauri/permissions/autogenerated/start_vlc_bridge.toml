@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-vlc-bridge"
+description = "Enables the start_vlc_bridge command without any pre-configured scope."
+commands.allow = ["start_vlc_bridge"]
+
+[[permission]]
+identifier = "deny-start-vlc-bridge"
+description = "Denies the start_vlc_bridge command without any pre-configured scope."
+commands.deny = ["start_vlc_bridge"]

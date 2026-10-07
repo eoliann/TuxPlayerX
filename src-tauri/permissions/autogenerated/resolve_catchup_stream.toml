@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resolve-catchup-stream"
+description = "Enables the resolve_catchup_stream command without any pre-configured scope."
+commands.allow = ["resolve_catchup_stream"]
+
+[[permission]]
+identifier = "deny-resolve-catchup-stream"
+description = "Denies the resolve_catchup_stream command without any pre-configured scope."
+commands.deny = ["resolve_catchup_stream"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-epg-programs"
+description = "Enables the load_epg_programs command without any pre-configured scope."
+commands.allow = ["load_epg_programs"]
+
+[[permission]]
+identifier = "deny-load-epg-programs"
+description = "Denies the load_epg_programs command without any pre-configured scope."
+commands.deny = ["load_epg_programs"]

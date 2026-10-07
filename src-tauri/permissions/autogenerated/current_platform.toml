@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-current-platform"
+description = "Enables the current_platform command without any pre-configured scope."
+commands.allow = ["current_platform"]
+
+[[permission]]
+identifier = "deny-current-platform"
+description = "Denies the current_platform command without any pre-configured scope."
+commands.deny = ["current_platform"]

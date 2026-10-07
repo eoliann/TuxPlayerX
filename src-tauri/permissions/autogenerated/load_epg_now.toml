@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-epg-now"
+description = "Enables the load_epg_now command without any pre-configured scope."
+commands.allow = ["load_epg_now"]
+
+[[permission]]
+identifier = "deny-load-epg-now"
+description = "Denies the load_epg_now command without any pre-configured scope."
+commands.deny = ["load_epg_now"]

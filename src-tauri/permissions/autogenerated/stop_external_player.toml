@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-external-player"
+description = "Enables the stop_external_player command without any pre-configured scope."
+commands.allow = ["stop_external_player"]
+
+[[permission]]
+identifier = "deny-stop-external-player"
+description = "Denies the stop_external_player command without any pre-configured scope."
+commands.deny = ["stop_external_player"]

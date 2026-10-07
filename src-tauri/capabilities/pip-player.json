@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pip-player",
+  "description": "Detached Picture-in-Picture window: it may only close itself.",
+  "windows": [
+    "pip-player"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-close-pip-window"
+  ]
+}

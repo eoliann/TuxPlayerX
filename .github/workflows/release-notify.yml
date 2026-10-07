@@ -20,6 +20,9 @@ on:
         description: Release tag to announce, e.g. v2.0.9 or android-v1.1.1 (posts to all its groups)
         required: true
 
+permissions:
+  contents: read
+
 jobs:
   notify:
     runs-on: ubuntu-latest
@@ -88,7 +91,7 @@ jobs:
               response=$(curl -sSg --max-time 30 "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" "${args[@]}") \
                 || response=$(jq -n --arg d "request failed (curl exit $?)" '{ok: false, description: $d}')
               if jq -e '.ok' <<< "$response" > /dev/null 2>&1; then
-                echo "Sent to ${item}"
+                echo "Sent to chat #$((++sent_count))"
                 sent=$((sent + 1))
               else
                 echo "::warning::Sending to ${item} failed: $(jq -r '.description // .' <<< "$response" 2>/dev/null || head -c 200 <<< "$response")"
