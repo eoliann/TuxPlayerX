@@ -30,7 +30,7 @@
 
 # TuxPlayerX
 
-TuxPlayerX is a redesigned desktop streaming player inspired by the visual system used in TuxPulse2.
+TuxPlayerX is a redesigned desktop and mobile streaming player.
 
 It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a **Rust backend**.
 
@@ -41,26 +41,38 @@ It is built with **React**, **TypeScript**, **Tailwind CSS**, **Tauri v2** and a
 <p align="center">
   Player
   <br>
-  <img src="./screenshots/2.0.3/TuxPlayerX-203-Player.png" alt="TuxPlayerX" width="45%">
-  <img src="./screenshots/2.0.3/TuxPlayerX-203-Player2.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-1b.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-1l.png" alt="TuxPlayerX" width="45%">
 </p>
 <p align="center">
   Subscriptions
   <br>
-  <img src="./screenshots/2.0.3/TuxPlayerX-203-Subcriptions.png" alt="TuxPlayerX" width="45%">
-  <img src="./screenshots/2.0.3/TuxPlayerX-203-Subscriptions2.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-2b.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-2l.png" alt="TuxPlayerX" width="45%">
 </p>
 <p align="center">
   Settings
   <br>
-  <img src="./screenshots/2.0.3/TuxPlayerX-203-Settings.png" alt="TuxPlayerX" width="45%">
-  <img src="./screenshots/2.0.3/TuxPlayerX-203-Settings2.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-3b.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-3l.png" alt="TuxPlayerX" width="45%">
 </p>
 <p align="center">
   About
   <br>
-  <img src="./screenshots/2.0.3/TuxPlayerX-203-About.png" alt="TuxPlayerX" width="45%">
-  <img src="./screenshots/2.0.3/TuxPlayerX-203-About2.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-4-1b.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-4-1l.png" alt="TuxPlayerX" width="45%">
+</p>
+<p align="center">
+  About
+  <br>
+  <img src="./screenshots/2.0.10/2.0.10-4-2b.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-4-2l.png" alt="TuxPlayerX" width="45%">
+</p>
+<p align="center">
+  About
+  <br>
+  <img src="./screenshots/2.0.10/2.0.10-5b.png" alt="TuxPlayerX" width="45%">
+  <img src="./screenshots/2.0.10/2.0.10-5l.png" alt="TuxPlayerX" width="45%">
 </p>
 
 ## Features
