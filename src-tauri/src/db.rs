@@ -10,6 +10,11 @@ pub const DEFAULT_EPG_URL: &str = "https://epgshare01.online/epgshare01/epg_ripp
 const OLD_DEFAULT_EPG_URL: &str = "https://iptv-epg.org/files/epg-ro.xml";
 /// Settings (camelCase, as in backups) that a backup file may not change.
 const NOT_IMPORTED_SETTINGS: [&str; 1] = ["externalPlayerCommand"];
+/// Built-in subscription: Romanian-language channels from iptv-org (github.com/iptv-org/iptv, PLAYLISTS.md).
+pub const PRESET_SUBSCRIPTION_NAME: &str = "iptv-org Română";
+pub const PRESET_SUBSCRIPTION_URL: &str = "https://iptv-org.github.io/iptv/languages/ron.m3u";
+/// Settings key marking that the built-in subscription was added once, so a user who deletes it keeps it deleted.
+const PRESET_SUBSCRIPTION_FLAG: &str = "preset_iptv_org_ron_added";
 
 pub struct Database {
     // A single long-lived connection; access is already serialized by the Mutex in AppState.
@@ -25,6 +30,7 @@ impl Database {
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
         let db = Self { conn };
         db.init()?;
+        db.add_preset_subscription()?;
         db.protect_stored_credentials()?;
         secret_store::restrict_permissions(&path);
         Ok(db)
@@ -58,6 +64,38 @@ impl Database {
                 self.conn.execute("DELETE FROM channel_cache WHERE subscription_id = ?1", params![id])?;
             }
         }
+        Ok(())
+    }
+
+    /// Adds the built-in iptv-org subscription once per install. It becomes the default only when
+    /// there is no other subscription yet, so existing setups keep their default.
+    fn add_preset_subscription(&self) -> anyhow::Result<()> {
+        let added: Option<String> = self.conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", params![PRESET_SUBSCRIPTION_FLAG], |row| row.get(0))
+            .optional()?;
+        if added.is_some() {
+            return Ok(());
+        }
+        let existing = self.list_subscriptions()?;
+        if !existing.iter().any(|sub| sub.url.as_deref().map(str::trim) == Some(PRESET_SUBSCRIPTION_URL)) {
+            self.save_subscription(&Subscription {
+                id: None,
+                name: PRESET_SUBSCRIPTION_NAME.into(),
+                sub_type: "m3u".into(),
+                url: Some(PRESET_SUBSCRIPTION_URL.into()),
+                portal_url: None,
+                mac_address: None,
+                username: None,
+                password: None,
+                is_default: existing.is_empty(),
+                expires_at: None,
+                active_connections: None,
+                max_connections: None,
+                created_at: None,
+                updated_at: None,
+            })?;
+        }
+        self.conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES(?1, 'true')", params![PRESET_SUBSCRIPTION_FLAG])?;
         Ok(())
     }
 
@@ -477,7 +515,29 @@ mod tests {
     fn temp_db(name: &str) -> (Database, PathBuf) {
         let dir = std::env::temp_dir().join(format!("tuxplayerx-db-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        (Database::new(dir.join("test.sqlite3")).unwrap(), dir)
+        let db = Database::new(dir.join("test.sqlite3")).unwrap();
+        // Start the other tests without the built-in subscription.
+        db.conn.execute("DELETE FROM subscriptions", []).unwrap();
+        (db, dir)
+    }
+
+    #[test]
+    fn preset_subscription_is_added_once() {
+        let dir = std::env::temp_dir().join(format!("tuxplayerx-db-test-preset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = Database::new(dir.join("test.sqlite3")).unwrap();
+        let subs = db.list_subscriptions().unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].url.as_deref(), Some(PRESET_SUBSCRIPTION_URL));
+        assert!(subs[0].is_default);
+
+        // Deleted by the user: it does not come back on the next start.
+        db.delete_subscription(subs[0].id.unwrap()).unwrap();
+        drop(db);
+        let reopened = Database::new(dir.join("test.sqlite3")).unwrap();
+        assert!(reopened.list_subscriptions().unwrap().is_empty());
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
