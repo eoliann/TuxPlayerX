@@ -2,6 +2,7 @@ package com.eoliann.tuxplayerx
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
@@ -54,6 +55,7 @@ class MainActivity : TauriActivity() {
     this.webView = webView
     webView.addJavascriptInterface(SafeArea(), "TuxSafeArea")
     webView.addJavascriptInterface(ExternalLinks(), "TuxExternal")
+    webView.addJavascriptInterface(ScreenOrientation(), "TuxScreen")
   }
 
   inner class SafeArea {
@@ -72,6 +74,16 @@ class MainActivity : TauriActivity() {
         true
       } catch (e: ActivityNotFoundException) {
         false
+      }
+    }
+  }
+
+  /** The player's fullscreen button: turns the screen to landscape (even with auto-rotate off), then releases it. */
+  inner class ScreenOrientation {
+    @JavascriptInterface
+    fun setLandscape(landscape: Boolean) {
+      runOnUiThread {
+        requestedOrientation = if (landscape) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
       }
     }
   }

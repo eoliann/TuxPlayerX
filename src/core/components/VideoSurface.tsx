@@ -744,7 +744,7 @@ export const VideoSurface = forwardRef<VideoSurfaceHandle, VideoSurfaceProps>(fu
           }}
         />
       ) : (
-        <div className="grid h-full min-h-[320px] place-items-center bg-slate-950 text-center text-slate-500">
+        <div className="grid h-full place-items-center bg-slate-950 text-center text-slate-500">
           <div>
             <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-3xl bg-white/5">
               <RotateCw size={28} />
