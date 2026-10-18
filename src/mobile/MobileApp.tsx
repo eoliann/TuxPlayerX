@@ -1,8 +1,9 @@
 import { Component, useEffect, useState, type ReactNode } from 'react';
-import { Clapperboard, ListVideo, Settings, Tv } from 'lucide-react';
-import { AppSettings } from '../core/types';
+import { Clapperboard, Download, ListVideo, Settings, Tv } from 'lucide-react';
+import { AppSettings, UpdateInfo } from '../core/types';
 import { api } from '../core/api';
 import { cn } from '../core/utils';
+import { useUpdateCheck } from '../core/useUpdateCheck';
 import { enableSpatialNavigation } from './spatialNav';
 import { enableSafeArea, safePadding } from './safeArea';
 import { LiveTv } from './LiveTv';
@@ -23,6 +24,7 @@ const defaultSettings: AppSettings = {
   epgTimeOffsetMinutes: 0,
   resumeLastChannel: true,
   playbackEngine: 'auto',
+  checkUpdates: true,
 };
 
 const TABS: { key: Tab; label: string; icon: typeof Tv }[] = [
@@ -61,6 +63,14 @@ export default function MobileApp() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const [status, setStatus] = useState('');
+  const { update, checkNow, dismiss: dismissUpdate } = useUpdateCheck(settingsLoaded && settings.checkUpdates);
+
+  const downloadUpdate = (info: UpdateInfo) => {
+    // The browser downloads the APK; Android then offers to install it over the current version.
+    api.openUrl(info.downloadUrl)
+      .then(() => setStatus(`Downloading TuxPlayerX ${info.latestVersion} in your browser.`))
+      .catch((error) => setStatus(String(error)));
+  };
 
   useEffect(() => enableSpatialNavigation(), []);
   useEffect(() => enableSafeArea(), []);
@@ -116,13 +126,30 @@ export default function MobileApp() {
           </div>
           {tab === 'vod' && <MobileVod reloadToken={reloadToken} onStatus={setStatus} />}
           {tab === 'subscriptions' && <MobileSubscriptions onChanged={() => setReloadToken((x) => x + 1)} onStatus={setStatus} />}
-          {tab === 'settings' && <MobileSettings settings={settings} onSettings={setSettings} onStatus={setStatus} />}
+          {tab === 'settings' && <MobileSettings settings={settings} onSettings={setSettings} onStatus={setStatus} onCheckUpdate={checkNow} onDownloadUpdate={downloadUpdate} />}
           </ScreenBoundary>
         </main>
         <nav className="flex shrink-0 border-t border-white/10 bg-slate-950/95 px-2 pb-1 md:hidden light:border-slate-200 light:bg-white">{nav}</nav>
       </div>
+      {update && (
+        <div className="fixed inset-x-4 bottom-28 z-50 mx-auto flex max-w-md items-center gap-3 rounded-2xl border border-emerald-400/30 bg-slate-900/95 p-3 shadow-2xl md:bottom-6 light:border-emerald-500/30 light:bg-white">
+          <Download className="shrink-0 text-emerald-300 light:text-emerald-600" size={20} />
+          <div className="min-w-0 flex-1 text-sm">
+            <div className="font-black">TuxPlayerX {update.latestVersion} is available</div>
+            <div className="text-xs text-slate-400 light:text-slate-500">You have {update.currentVersion}.</div>
+          </div>
+          <button type="button" onClick={() => downloadUpdate(update)} className="btn-primary shrink-0">Download</button>
+          <button type="button" onClick={dismissUpdate} className="btn-secondary shrink-0">Later</button>
+        </div>
+      )}
       {status && (
-        <div className="pointer-events-none fixed inset-x-4 bottom-20 z-[60] mx-auto max-w-md rounded-2xl border border-white/10 bg-slate-900/95 px-4 py-3 text-center text-sm shadow-2xl md:bottom-6 light:border-slate-200 light:bg-white">
+        <div
+          className={cn(
+            'pointer-events-none fixed inset-x-4 z-[60] mx-auto max-w-md rounded-2xl border border-white/10 bg-slate-900/95 px-4 py-3 text-center text-sm shadow-2xl light:border-slate-200 light:bg-white',
+            // Above the update notice while it is shown.
+            update ? 'bottom-52 md:bottom-28' : 'bottom-20 md:bottom-6',
+          )}
+        >
           {status}
         </div>
       )}

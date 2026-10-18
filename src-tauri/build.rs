@@ -2,6 +2,7 @@
 /// the main window uses them all, the detached Picture-in-Picture window only `close_pip_window`.
 const COMMANDS: &[&str] = &[
     "app_info",
+    "check_for_update",
     "current_platform",
     "list_subscriptions",
     "save_subscription",

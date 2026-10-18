@@ -158,6 +158,7 @@ impl Database {
             ("epg_time_offset_minutes", "0"),
             ("resume_last_channel", "true"),
             ("playback_engine", "auto"),
+            ("check_updates", "true"),
         ];
         for (key, value) in defaults {
             conn.execute(
@@ -462,6 +463,7 @@ impl Database {
             epg_time_offset_minutes: get("epg_time_offset_minutes", "0")?.parse().unwrap_or(0),
             resume_last_channel: get("resume_last_channel", "true")? == "true",
             playback_engine: get("playback_engine", "auto")?,
+            check_updates: get("check_updates", "true")? == "true",
         })
     }
 
@@ -478,6 +480,7 @@ impl Database {
             ("epg_time_offset_minutes", settings.epg_time_offset_minutes.to_string()),
             ("resume_last_channel", settings.resume_last_channel.to_string()),
             ("playback_engine", settings.playback_engine.clone()),
+            ("check_updates", settings.check_updates.to_string()),
         ];
         for (key, value) in values {
             conn.execute(
