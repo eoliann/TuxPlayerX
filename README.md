@@ -19,6 +19,7 @@
 ![Latest RPM Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerX_x86_64.rpm?style=plastic)
 ![RPM Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerX_x86_64.rpm?style=plastic)
 
+![Latest RPM Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/latest/TuxPlayerX-android.apk??style=plastic)
 ![Android Downloads](https://img.shields.io/github/downloads/eoliann/TuxPlayerX/TuxPlayerX-android.apk?style=plastic)
 
 
