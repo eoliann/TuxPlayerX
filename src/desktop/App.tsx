@@ -10,6 +10,8 @@ import { VodView } from './components/VodView';
 import { AppSettings, Subscription } from '../core/types';
 import { daysUntilExpiry, EXPIRY_WARNING_DAYS } from '../core/utils';
 import { api } from '../core/api';
+import { useUpdateCheck } from '../core/useUpdateCheck';
+import { UpdateInfo } from '../core/types';
 
 const defaultSettings: AppSettings = {
   theme: 'dark',
@@ -22,6 +24,7 @@ const defaultSettings: AppSettings = {
   epgTimeOffsetMinutes: 0,
   resumeLastChannel: true,
   playbackEngine: 'auto',
+  checkUpdates: true,
 };
 
 const TAB_TITLES: Record<TabKey, string> = {
@@ -42,6 +45,14 @@ function App() {
   const [liveStopSignal, setLiveStopSignal] = useState(0);
   const [expiring, setExpiring] = useState<{ sub: Subscription; days: number }[]>([]);
   const [expiryDismissed, setExpiryDismissed] = useState(false);
+  const { update, checkNow, dismiss: dismissUpdate } = useUpdateCheck(settingsLoaded && settings.checkUpdates);
+
+  const downloadUpdate = (info: UpdateInfo) => {
+    // The browser downloads the installer (or shows the release page when there is no installer for this system).
+    api.openUrl(info.downloadUrl)
+      .then(() => setStatus(`Downloading TuxPlayerX ${info.latestVersion} in your browser.`))
+      .catch((err) => setStatus(String(err)));
+  };
 
   useEffect(() => {
     api.getSettings()
@@ -103,7 +114,7 @@ function App() {
       case 'settings':
         return <SettingsView settings={settings} onSettings={setSettings} onDataChanged={() => setReloadToken((x) => x + 1)} onStatus={setStatus} />;
       case 'about':
-        return <AboutView onStatus={setStatus} />;
+        return <AboutView onStatus={setStatus} onCheckUpdate={checkNow} onDownloadUpdate={downloadUpdate} />;
       default:
         return null;
     }
@@ -111,9 +122,11 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 transition-colors light:bg-slate-100 light:text-slate-950">
-      <div className="flex min-h-screen">
-        <Sidebar activeTab={activeTab} onTabChange={setActiveTab} theme={settings.theme} />
-        <main className="min-w-0 flex-1">
+      {/* One window tall: the sidebar stays put and only the page area scrolls, so the sidebar's bottom
+          (theme, version) stays at the bottom of the window however tall a page gets. */}
+      <div className="flex h-screen">
+        <Sidebar activeTab={activeTab} onTabChange={setActiveTab} theme={settings.theme} update={update} onDownloadUpdate={downloadUpdate} onDismissUpdate={dismissUpdate} />
+        <main className="min-w-0 flex-1 overflow-y-auto">
           <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-white/10 bg-slate-950/85 px-6 backdrop-blur light:border-slate-200 light:bg-white/85">
             <div>
               <h1 className="text-base font-bold tracking-tight">{TAB_TITLES[activeTab]}</h1>

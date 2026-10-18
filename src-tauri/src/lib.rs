@@ -4,6 +4,7 @@ mod models;
 mod providers;
 mod secret_store;
 mod security;
+mod updates;
 mod xtream;
 
 use std::fs;
@@ -219,6 +220,12 @@ fn app_info(app: tauri::AppHandle) -> AppInfo {
     }
 }
 
+
+/// Looks up the newest published release of this edition on GitHub.
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<updates::UpdateInfo, String> {
+    updates::check(&app.package_info().version.to_string()).await.map_err(err)
+}
 
 #[tauri::command]
 fn current_platform() -> String {
@@ -848,6 +855,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            check_for_update,
             current_platform,
             list_subscriptions,
             save_subscription,

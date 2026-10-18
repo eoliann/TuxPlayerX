@@ -113,6 +113,9 @@ pub struct AppSettings {
     /// "auto": built-in player first, VLC bridge only when needed; "vlc": always use the VLC bridge.
     #[serde(default = "default_playback_engine")]
     pub playback_engine: String,
+    /// Look for a newer TuxPlayerX release on GitHub at startup.
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
 }
 
 fn default_true() -> bool { true }

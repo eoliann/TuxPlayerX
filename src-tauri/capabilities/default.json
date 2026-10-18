@@ -10,6 +10,7 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "allow-app-info",
+    "allow-check-for-update",
     "allow-current-platform",
     "allow-list-subscriptions",
     "allow-save-subscription",

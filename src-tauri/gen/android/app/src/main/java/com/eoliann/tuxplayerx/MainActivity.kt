@@ -1,6 +1,9 @@
 package com.eoliann.tuxplayerx
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
@@ -50,11 +53,27 @@ class MainActivity : TauriActivity() {
   override fun onWebViewCreate(webView: WebView) {
     this.webView = webView
     webView.addJavascriptInterface(SafeArea(), "TuxSafeArea")
+    webView.addJavascriptInterface(ExternalLinks(), "TuxExternal")
   }
 
   inner class SafeArea {
     @JavascriptInterface
     fun insets(): String = cutoutJson
+  }
+
+  /** Opens https:// links (release pages, APK downloads) in the system browser; the desktop opener does not work on Android. */
+  inner class ExternalLinks {
+    @JavascriptInterface
+    fun open(url: String): Boolean {
+      val uri = Uri.parse(url.trim())
+      if (uri.scheme != "https" || uri.host.isNullOrEmpty()) return false
+      return try {
+        startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+      } catch (e: ActivityNotFoundException) {
+        false
+      }
+    }
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {

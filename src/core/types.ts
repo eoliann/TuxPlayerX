@@ -85,6 +85,18 @@ export interface AppSettings {
   resumeLastChannel: boolean;
   /** 'auto': built-in player first, VLC bridge only when needed; 'vlc': always use the VLC bridge. */
   playbackEngine: 'auto' | 'vlc';
+  /** Look for a newer TuxPlayerX release on GitHub at startup. */
+  checkUpdates: boolean;
+}
+
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  available: boolean;
+  releaseUrl: string;
+  /** The installer for this system, or the release page when there is none. */
+  downloadUrl: string;
+  notes: string;
 }
 
 export interface AppInfo {

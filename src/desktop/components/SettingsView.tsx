@@ -100,6 +100,10 @@ export function SettingsView({ settings: savedSettings, onSettings, onDataChange
           <input type="checkbox" checked={settings.resumeLastChannel} onChange={(e) => update({ resumeLastChannel: e.target.checked })} />
         </label>
         <label className="setting-row">
+          <span>Check for new versions on startup</span>
+          <input type="checkbox" checked={settings.checkUpdates} onChange={(e) => update({ checkUpdates: e.target.checked })} />
+        </label>
+        <label className="setting-row">
           <span>Auto-restart stalled stream</span>
           <input type="checkbox" checked={settings.autoRestart} onChange={(e) => update({ autoRestart: e.target.checked })} />
         </label>

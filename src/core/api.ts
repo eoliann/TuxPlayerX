@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   Channel, ChannelLoadResult, EpgChannelKey, EpgGridItem, EpgNow, EpgProgram, ImportSummary, SeriesInfo, Subscription, SubscriptionInfo,
   AppSettings, AppInfo, DirectStream, StreamHeaders, VodCategory, VodDetails, VodItem, VodKind, VodPage, VodPlayRequest,
+  UpdateInfo,
 } from './types';
 
 export const api = {
@@ -46,7 +47,16 @@ export const api = {
   stopVlcBridge: () => invoke<void>('stop_vlc_bridge'),
   stopExternalPlayer: () => invoke<void>('stop_external_player'),
   shutdownPlayback: () => invoke<void>('shutdown_playback'),
-  openUrl: (url: string) => invoke<void>('open_url', { url }),
+  openUrl: async (url: string) => {
+    // Android: the activity opens links through an Intent (TuxExternal); the desktop opener has no browser there.
+    const android = (window as Window & { TuxExternal?: { open: (url: string) => boolean } }).TuxExternal;
+    if (android) {
+      if (!android.open(url)) throw new Error('Could not open the link.');
+      return;
+    }
+    await invoke<void>('open_url', { url });
+  },
+  checkForUpdate: () => invoke<UpdateInfo>('check_for_update'),
   /** Writes the backup (it contains passwords) to a path the user picked in the save dialog. */
   exportBackup: (path: string) => invoke<string>('export_backup', { path }),
   revealBackup: (path: string) => invoke<void>('reveal_backup', { path }),

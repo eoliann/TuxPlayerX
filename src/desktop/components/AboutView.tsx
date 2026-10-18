@@ -1,15 +1,33 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, Github, ShieldCheck } from 'lucide-react';
-import { AppInfo } from '../../core/types';
+import { Download, ExternalLink, Github, RefreshCw, ShieldCheck } from 'lucide-react';
+import { AppInfo, UpdateInfo } from '../../core/types';
+import { cn } from '../../core/utils';
 import { api } from '../../core/api';
 import { APP_NAME, APP_VERSION } from '../../core/appMeta';
 
 interface Props {
   onStatus: (status: string) => void;
+  onCheckUpdate: () => Promise<UpdateInfo>;
+  onDownloadUpdate: (update: UpdateInfo) => void;
 }
 
-export function AboutView({ onStatus }: Props) {
+export function AboutView({ onStatus, onCheckUpdate, onDownloadUpdate }: Props) {
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [found, setFound] = useState<UpdateInfo | null>(null);
+
+  const checkUpdate = async () => {
+    setChecking(true);
+    try {
+      const result = await onCheckUpdate();
+      setFound(result.available ? result : null);
+      onStatus(result.available ? `TuxPlayerX ${result.latestVersion} is available.` : `You have the latest version (${result.currentVersion}).`);
+    } catch (err) {
+      onStatus(`Could not check for updates: ${String(err)}`);
+    } finally {
+      setChecking(false);
+    }
+  };
 
   useEffect(() => {
     api.appInfo().then(setInfo).catch((err) => onStatus(String(err)));
@@ -35,7 +53,14 @@ export function AboutView({ onStatus }: Props) {
           TuxPlayerX is a desktop streaming player for user-provided M3U playlists and authorized MAC/Stalker/Ministra-style subscriptions. It is built with React, TypeScript, Tailwind CSS, Tauri and Rust.
         </p>
         <div className="mt-6 flex flex-wrap gap-3">
-          <button onClick={() => open(info?.downloadUrl)} className="btn-primary"><Github size={16} /> Releases</button>
+          {found ? (
+            <button onClick={() => onDownloadUpdate(found)} className="btn-primary"><Download size={16} /> Download {found.latestVersion}</button>
+          ) : (
+            <button onClick={checkUpdate} disabled={checking} className="btn-primary">
+              <RefreshCw size={16} className={cn(checking && 'animate-spin')} /> Check for updates
+            </button>
+          )}
+          <button onClick={() => open(info?.downloadUrl)} className="btn-secondary"><Github size={16} /> Releases</button>
           <button onClick={() => open('https://github.com/eoliann')} className="btn-secondary"><ExternalLink size={16} /> Author GitHub</button>
         </div>
       </section>

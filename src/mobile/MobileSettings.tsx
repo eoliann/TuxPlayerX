@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ExternalLink, Moon, Save, Sun } from 'lucide-react';
-import { AppInfo, AppSettings } from '../core/types';
+import { Download, ExternalLink, Moon, RefreshCw, Save, Sun } from 'lucide-react';
+import { AppInfo, AppSettings, UpdateInfo } from '../core/types';
 import { api } from '../core/api';
 import { ANDROID_VERSION, APP_NAME } from '../core/appMeta';
 import { cn } from '../core/utils';
@@ -9,11 +9,15 @@ interface Props {
   settings: AppSettings;
   onSettings: (settings: AppSettings) => void;
   onStatus: (status: string) => void;
+  onCheckUpdate: () => Promise<UpdateInfo>;
+  onDownloadUpdate: (update: UpdateInfo) => void;
 }
 
-export function MobileSettings({ settings, onSettings, onStatus }: Props) {
+export function MobileSettings({ settings, onSettings, onStatus, onCheckUpdate, onDownloadUpdate }: Props) {
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [found, setFound] = useState<UpdateInfo | null>(null);
   // Unsaved edits survive the theme being applied (which updates `settings`).
   const dirtyRef = useRef(false);
 
@@ -47,6 +51,19 @@ export function MobileSettings({ settings, onSettings, onStatus }: Props) {
     }
   };
 
+  const checkUpdate = async () => {
+    setChecking(true);
+    try {
+      const result = await onCheckUpdate();
+      setFound(result.available ? result : null);
+      onStatus(result.available ? `TuxPlayerX ${result.latestVersion} is available.` : `You have the latest version (${result.currentVersion}).`);
+    } catch (error) {
+      onStatus(`Could not check for updates: ${String(error)}`);
+    } finally {
+      setChecking(false);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-xl space-y-4 p-4">
       <h2 className="text-xl font-black">Settings</h2>
@@ -67,6 +84,11 @@ export function MobileSettings({ settings, onSettings, onStatus }: Props) {
           </button>
         ))}
       </div>
+
+      <label className="setting-row">
+        <span>Check for new versions on startup</span>
+        <input type="checkbox" checked={draft.checkUpdates} onChange={(e) => update({ checkUpdates: e.target.checked })} />
+      </label>
 
       <label className="setting-row">
         <span>Auto-restart stalled streams</span>
@@ -94,8 +116,17 @@ export function MobileSettings({ settings, onSettings, onStatus }: Props) {
         <p className="mt-2 text-xs text-slate-400">
           Plays your own M3U playlists and MAC portal subscriptions. Some channels use video or audio formats your device cannot decode.
         </p>
+        {found ? (
+          <button type="button" onClick={() => onDownloadUpdate(found)} className="btn-primary mt-3">
+            <Download size={16} /> Download {found.latestVersion}
+          </button>
+        ) : (
+          <button type="button" onClick={checkUpdate} disabled={checking} className="btn-primary mt-3">
+            <RefreshCw size={16} className={cn(checking && 'animate-spin')} /> Check for updates
+          </button>
+        )}
         {info?.repository && (
-          <button type="button" onClick={() => api.openUrl(`https://github.com/${info.repository}`).catch((error) => onStatus(String(error)))} className="btn-secondary mt-3">
+          <button type="button" onClick={() => api.openUrl(`https://github.com/${info.repository}`).catch((error) => onStatus(String(error)))} className="btn-secondary ml-2 mt-3">
             <ExternalLink size={16} /> Project on GitHub
           </button>
         )}
