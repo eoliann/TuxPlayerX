@@ -785,10 +785,41 @@ fn configure_linux_video_decoding() {
     std::env::set_var("GST_PLUGIN_FEATURE_RANK", ranks);
 }
 
+/// True when a display controller from NVIDIA (PCI vendor 0x10de) is present, with either the
+/// proprietary driver or nouveau.
+#[cfg(target_os = "linux")]
+fn has_nvidia_gpu() -> bool {
+    let Ok(entries) = fs::read_dir("/sys/bus/pci/devices") else { return false };
+    entries.flatten().any(|entry| {
+        let read = |name: &str| fs::read_to_string(entry.path().join(name)).unwrap_or_default();
+        read("vendor").trim() == "0x10de" && read("class").trim().starts_with("0x03")
+    })
+}
+
+/// WebKitGTK's accelerated compositing flickers and glitches while scrolling on NVIDIA GPUs (seen
+/// in the channel list on an older card). Disabling it paints in software, which is smooth there.
+/// Skipped when the user already set WebKit's own variables or opted out with TUXPLAYERX_GPU_COMPOSITING=1.
+/// Must run before WebKit starts, i.e. before any thread is spawned.
+#[cfg(target_os = "linux")]
+fn configure_linux_compositing() {
+    if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_some()
+        || std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some()
+        || std::env::var_os("TUXPLAYERX_GPU_COMPOSITING").is_some_and(|v| v == "1")
+    {
+        return;
+    }
+    if has_nvidia_gpu() {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
-    configure_linux_video_decoding();
+    {
+        configure_linux_video_decoding();
+        configure_linux_compositing();
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
