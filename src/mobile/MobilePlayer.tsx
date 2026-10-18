@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Expand, History, Radio, Shrink, Star, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Expand, History, Maximize, Minimize, Radio, Shrink, Star, X } from 'lucide-react';
 import { AppSettings, Channel, EpgProgram } from '../core/types';
 import { api } from '../core/api';
 import type { StreamFormat } from '../core/stream';
@@ -8,6 +8,7 @@ import { VideoSurface, VideoSurfaceHandle } from '../core/components/VideoSurfac
 import { useBackHandler } from './useBackHandler';
 import { safePadding } from './safeArea';
 import { useVideoFit } from './useVideoFit';
+import { useFullscreen } from './useFullscreen';
 
 /** A past programme replayed from the channel's TV archive. Times are Unix seconds. */
 export interface ArchiveProgramme {
@@ -34,7 +35,7 @@ interface Props {
   onStatus: (status: string) => void;
 }
 
-/** How long the info bar stays visible over full-screen video (landscape / TV). */
+/** How long the info bar stays visible over fullscreen video. */
 const INFO_HIDE_MS = 5000;
 
 const seconds = (iso?: string | null) => (iso ? Math.floor(Date.parse(iso) / 1000) : NaN);
@@ -47,8 +48,9 @@ function programmeTimes(program: EpgProgram): [number, number] {
 }
 
 /**
- * Full-screen player. Portrait phones show the video on top with details below; landscape phones,
- * tablets and TVs show the video full screen with an info bar that appears on tap or remote keys.
+ * Full-screen player. Portrait phones show the video on top with details below; in fullscreen (landscape
+ * phones, tablets and TVs, or the fullscreen button) the video fills the screen with an info bar that
+ * appears on tap or remote keys.
  * Remote: Up/Down or Channel +/- switch channels, OK shows the info bar, Back closes the player.
  */
 export function MobilePlayer({
@@ -77,6 +79,7 @@ export function MobilePlayer({
 
   useBackHandler(true, onClose);
   const [fit, toggleFit] = useVideoFit();
+  const { fullscreen, toggle: toggleFullscreen } = useFullscreen();
 
   const showInfo = () => {
     setInfoVisible(true);
@@ -229,8 +232,13 @@ export function MobilePlayer({
       >
         <Star size={20} fill={isFavorite ? 'currentColor' : 'none'} />
       </button>
-      <button type="button" onClick={toggleFit} className="btn-secondary px-3" aria-label={fit === 'cover' ? 'Fit the whole picture' : 'Fill the screen'}>
-        {fit === 'cover' ? <Shrink size={20} /> : <Expand size={20} />}
+      {fullscreen && (
+        <button type="button" onClick={toggleFit} className="btn-secondary px-3" aria-label={fit === 'cover' ? 'Fit the whole picture' : 'Fill the screen'}>
+          {fit === 'cover' ? <Shrink size={20} /> : <Expand size={20} />}
+        </button>
+      )}
+      <button type="button" onClick={toggleFullscreen} className="btn-secondary px-3" aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+        {fullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
       </button>
       <button type="button" onClick={onClose} className="btn-secondary px-3" aria-label="Close player">
         <X size={20} />
@@ -267,10 +275,10 @@ export function MobilePlayer({
       ref={rootRef}
       tabIndex={-1}
       data-nav-ignore
-      className="fixed inset-0 z-50 flex flex-col bg-black text-white outline-none landscape:block"
+      className={cn('fixed inset-0 z-50 bg-black text-white outline-none', fullscreen ? 'block' : 'flex flex-col')}
       onClick={showInfo}
     >
-      <div className="relative aspect-video w-full shrink-0 landscape:absolute landscape:inset-0 landscape:aspect-auto">
+      <div className={cn('relative w-full', fullscreen ? 'absolute inset-0' : 'aspect-video max-h-[60vh] min-h-0 shrink-0 overflow-hidden')}>
         <VideoSurface
           ref={surfaceRef}
           src={src}
@@ -295,8 +303,8 @@ export function MobilePlayer({
         )}
       </div>
 
-      {/* Portrait: details below the video. */}
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 landscape:hidden">
+      {/* Not fullscreen: details below the video. */}
+      <div className={cn('min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4', fullscreen ? 'hidden' : 'flex')}>
         {details}
         {controls}
         {upcoming.length > 0 && (
@@ -332,10 +340,11 @@ export function MobilePlayer({
         )}
       </div>
 
-      {/* Landscape / TV: info bar over the video. */}
+      {/* Fullscreen: info bar over the video. */}
       <div
         className={cn(
-          'pointer-events-none absolute inset-x-0 bottom-0 hidden bg-gradient-to-t from-black/90 via-black/60 to-transparent transition-opacity duration-300 landscape:block',
+          'pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent transition-opacity duration-300',
+          fullscreen ? 'block' : 'hidden',
           infoVisible ? 'opacity-100' : 'opacity-0',
         )}
         style={{ ...safePadding('1.5rem'), paddingTop: '4rem' }}

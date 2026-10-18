@@ -593,8 +593,10 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
         ? 'No recently watched channels yet.'
         : 'No channels match this search.';
 
+  // The single row is exactly the grid's height (minmax(0, 1fr)), so a tall video cannot push the player
+  // column past the window: the video and then the TV guide shrink instead, and both stay in view.
   return (
-    <div className="grid h-[calc(100vh-112px)] min-h-[620px] grid-cols-[320px_minmax(0,1fr)] items-stretch gap-5">
+    <div className="grid h-[calc(100vh-112px)] min-h-[560px] grid-cols-[320px_minmax(0,1fr)] grid-rows-[minmax(0,1fr)] items-stretch gap-5">
       <section className="flex h-full min-h-0 flex-col rounded-[1.75rem] border border-white/10 bg-white/[0.04] p-3 shadow-2xl shadow-black/20 light:border-slate-200 light:bg-white">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
@@ -716,9 +718,9 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
               </button>
             </div>
           </div>
-          <div className="min-h-[460px] flex-1">
+          <div className="min-h-[180px] flex-1">
             {playingElsewhere ? (
-              <div className="grid h-full min-h-[460px] place-items-center rounded-3xl border border-white/10 bg-black text-center text-slate-400 shadow-2xl shadow-black/30 light:border-slate-200">
+              <div className="grid h-full place-items-center rounded-3xl border border-white/10 bg-black text-center text-slate-400 shadow-2xl shadow-black/30 light:border-slate-200">
                 <div className="max-w-md px-6">
                   <div className="text-lg font-black text-white">{playingElsewhere === 'vlc' ? 'Playing in VLC' : 'Playing in a detached window'}</div>
                   <div className="mt-2 text-sm">
@@ -743,11 +745,12 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
                 onStatus={onStatus}
                 onUnsupported={() => handleEmbeddedFailure(true)}
                 onFailed={streamMode === 'direct' ? () => handleEmbeddedFailure(false) : undefined}
+                className="min-h-0"
               />
             )}
           </div>
 
-          <div className="mt-3 rounded-3xl border border-white/10 bg-black/20 p-3 light:border-slate-200 light:bg-slate-50">
+          <div className="mt-3 flex min-h-[7.5rem] flex-col rounded-3xl border border-white/10 bg-black/20 p-3 light:border-slate-200 light:bg-slate-50">
             <div className="mb-2 flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-black">TV Guide / EPG</h3>
@@ -755,7 +758,7 @@ export function PlayerView({ settings, reloadToken, active, stopSignal, onStatus
               </div>
               {epgLoading && <RefreshCw size={16} className="animate-spin text-cyan-300" />}
             </div>
-            <div ref={epgScrollRef} className="relative max-h-40 overflow-auto pr-1">
+            <div ref={epgScrollRef} className="relative max-h-40 min-h-0 flex-1 overflow-auto pr-1">
               {!settings.epgUrl?.trim() ? (
                 <div className="rounded-2xl border border-dashed border-white/10 p-3 text-xs text-slate-500 light:border-slate-200">No EPG source configured.</div>
               ) : epgPrograms.length === 0 ? (

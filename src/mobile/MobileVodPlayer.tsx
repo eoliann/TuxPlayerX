@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Expand, FastForward, Pause, Play, Rewind, Shrink, X } from 'lucide-react';
+import { Expand, FastForward, Maximize, Minimize, Pause, Play, Rewind, Shrink, X } from 'lucide-react';
 import type { StreamFormat } from '../core/stream';
 import { cn } from '../core/utils';
 import { formatClock, loadProgress, saveProgress } from '../core/vodProgress';
@@ -7,6 +7,7 @@ import { VideoSurface, VideoSurfaceHandle } from '../core/components/VideoSurfac
 import { useBackHandler } from './useBackHandler';
 import { safePadding } from './safeArea';
 import { useVideoFit } from './useVideoFit';
+import { useFullscreen } from './useFullscreen';
 
 export interface VodPlayback {
   title: string;
@@ -40,6 +41,8 @@ export function MobileVodPlayer({ playback, onClose, onStatus }: Props) {
 
   useBackHandler(true, onClose);
   const [fit, toggleFit] = useVideoFit();
+  // The video already fills the screen; the button turns it to landscape so a film uses the whole width.
+  const { fullscreen, toggle: toggleFullscreen } = useFullscreen();
 
   const showBar = () => {
     setBarVisible(true);
@@ -141,6 +144,9 @@ export function MobileVodPlayer({ playback, onClose, onStatus }: Props) {
           <div className="min-w-0 flex-1 truncate text-base font-black">{playback.title}</div>
           <button type="button" onClick={toggleFit} className="rounded-full bg-white/10 p-2" aria-label={fit === 'cover' ? 'Fit the whole picture' : 'Fill the screen'}>
             {fit === 'cover' ? <Shrink size={20} /> : <Expand size={20} />}
+          </button>
+          <button type="button" onClick={toggleFullscreen} className="rounded-full bg-white/10 p-2" aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+            {fullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
           </button>
         </div>
         {position && (
