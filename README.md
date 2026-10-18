@@ -260,6 +260,10 @@ npm run tauri:dev
 
 This usually happens when a Tauri project was moved or copied from another path and the generated `src-tauri/target` cache still contains stale absolute paths.
 
+## Troubleshooting: flicker while scrolling on Linux (NVIDIA)
+
+WebKitGTK's GPU compositing flickers while scrolling on NVIDIA cards, so on Linux TuxPlayerX sets `WEBKIT_DISABLE_COMPOSITING_MODE=1` automatically when it finds an NVIDIA GPU. To keep GPU compositing anyway, start the app with `TUXPLAYERX_GPU_COMPOSITING=1`. If you set `WEBKIT_DISABLE_COMPOSITING_MODE` or `WEBKIT_DISABLE_DMABUF_RENDERER` yourself, your value is used as is.
+
 ## Layout update
 
 The default desktop window starts larger and the Channels panel is more compact, giving the video player more room on first launch.
