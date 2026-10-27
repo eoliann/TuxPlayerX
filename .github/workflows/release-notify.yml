@@ -42,6 +42,7 @@ jobs:
       - name: Check chats (dry run)
         if: ${{ inputs.dry_run }}
         run: |
+          echo "Bot: @$(curl -sSg --max-time 30 "https://api.telegram.org/bot${TG_BOT_TOKEN}/getMe" | jq -r '.result.username // "unknown (token rejected)"')"
           failed=0
           for list in TG_CHATS TG_CHATS_WINDOWS TG_CHATS_LINUX TG_CHATS_ANDROID; do
             IFS=',' read -r -a chats <<< "${!list}"
