@@ -19,6 +19,10 @@ on:
       tag:
         description: Release tag to announce, e.g. v2.0.9 or android-v1.1.1 (posts to all its groups)
         required: true
+      dry_run:
+        description: Only check that the bot can reach every configured chat (no message is sent)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,7 +39,28 @@ jobs:
       TG_CHATS_ANDROID: ${{ secrets.TG_CHATS_ANDROID }}
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
+      - name: Check chats (dry run)
+        if: ${{ inputs.dry_run }}
+        run: |
+          failed=0
+          for list in TG_CHATS TG_CHATS_WINDOWS TG_CHATS_LINUX TG_CHATS_ANDROID; do
+            IFS=',' read -r -a chats <<< "${!list}"
+            for item in "${chats[@]}"; do
+              item=$(xargs <<< "$item")
+              [ -z "$item" ] && continue
+              response=$(curl -sSg --max-time 30 "https://api.telegram.org/bot${TG_BOT_TOKEN}/getChat" -d "chat_id=${item%%:*}")
+              if jq -e '.ok' <<< "$response" > /dev/null 2>&1; then
+                echo "${list}: OK $(jq -r '.result | "\(.title) (\(.id))"' <<< "$response")$([[ "$item" == *:* ]] && echo " topic ${item##*:}")"
+              else
+                echo "::error::${list}: cannot reach ${item%%:*}: $(jq -r '.description // .' <<< "$response")"
+                failed=1
+              fi
+            done
+          done
+          exit $failed
+
       - name: Wait for the release packages
+        if: ${{ !inputs.dry_run }}
         run: |
           if [[ "$RELEASE_TAG" == android-* ]]; then
             expected=(TuxPlayerX-android.apk)
@@ -53,6 +78,7 @@ jobs:
           echo "::warning::Not every package was attached in time; announcing the ones that exist."
 
       - name: Send Telegram notifications
+        if: ${{ !inputs.dry_run }}
         run: |
           if [ -z "$TG_BOT_TOKEN" ]; then
             echo "::error::TG_BOT_TOKEN is not set."
