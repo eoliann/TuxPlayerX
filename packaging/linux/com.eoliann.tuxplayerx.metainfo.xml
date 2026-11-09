@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.eoliann.tuxplayerx</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>TuxPlayerX</name>
+  <summary>Play live TV and video from your own sources</summary>
+  <description>
+    <p>Watch live TV and video from your own M3U playlists and authorized streaming subscriptions. Browse the programme guide, save favorite channels, and use the detached player window for picture-in-picture playback.</p>
+  </description>
+  <launchable type="desktop-id">TuxPlayerX.desktop</launchable>
+  <provides>
+    <binary>tuxplayerx</binary>
+  </provides>
+  <url type="homepage">https://github.com/eoliann/TuxPlayerX</url>
+</component>
