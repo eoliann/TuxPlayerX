@@ -168,6 +168,18 @@ sudo apt install -y \
   patchelf
 ```
 
+## Uninstall on Linux
+
+Close TuxPlayerX, then remove it with the package manager used for installation.
+
+| Installed package | Command |
+| --- | --- |
+| Debian, Ubuntu or Linux Mint (.deb) | `sudo apt remove tux-player-x` |
+| Fedora (.rpm) | `sudo dnf remove tux-player-x` |
+| Arch Linux or CachyOS (.pkg.tar.zst) | `sudo pacman -R tuxplayerx-bin` |
+
+On desktops with a software center that manages installed native packages, look for **TuxPlayerX** under **Installed** and select **Uninstall**. The terminal commands also work with packages from earlier releases.
+
 ## Development run
 
 ```bash

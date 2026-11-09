@@ -75,7 +75,15 @@
     ],
     "linux": {
       "deb": {
-        "depends": []
+        "depends": [],
+        "files": {
+          "/usr/share/metainfo/com.eoliann.tuxplayerx.metainfo.xml": "../packaging/linux/com.eoliann.tuxplayerx.metainfo.xml"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/metainfo/com.eoliann.tuxplayerx.metainfo.xml": "../packaging/linux/com.eoliann.tuxplayerx.metainfo.xml"
+        }
       }
     }
   }

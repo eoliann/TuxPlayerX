@@ -4,6 +4,13 @@ name: Build Linux packages
 # DEB, RPM and Arch packages. It can also be run manually from the Actions tab;
 # give a release tag (for example v2.0.6) to build that tag and attach the packages to its release.
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-linux.yml'
+      - 'packaging/**'
+      - 'scripts/package-arch.sh'
+      - 'src-tauri/tauri.conf.json'
   workflow_dispatch:
     inputs:
       tag:
@@ -71,6 +78,48 @@ jobs:
       - name: Build Arch package
         if: hashFiles('packaging/arch/PKGBUILD.in') != ''
         run: bash scripts/package-arch.sh
+
+      - name: Verify installation and removal on Debian, Fedora and Arch
+        if: hashFiles('packaging/linux/com.eoliann.tuxplayerx.metainfo.xml') != ''
+        run: |
+          verify_uninstall() {
+            local image="$1" package="$2"
+            test -f "$package"
+            docker run --rm --mount "type=bind,src=$PWD/$package,dst=/packages/$(basename "$package"),readonly" \
+              "$image" bash -euc '
+                package="$1"
+                case "$2" in
+                  debian:*)
+                    apt-get update
+                    apt-get install -y "$package"
+                    remove=(apt-get remove -y tux-player-x)
+                    ;;
+                  fedora:*)
+                    dnf install -y "$package"
+                    remove=(dnf remove -y tux-player-x)
+                    ;;
+                  archlinux:*)
+                    pacman -Syu --noconfirm
+                    pacman -U --noconfirm "$package"
+                    remove=(pacman -R --noconfirm tuxplayerx-bin)
+                    ;;
+                esac
+                binary=/usr/bin/tuxplayerx
+                launcher=/usr/share/applications/TuxPlayerX.desktop
+                metadata=/usr/share/metainfo/com.eoliann.tuxplayerx.metainfo.xml
+                test -x "$binary"
+                test -f "$launcher"
+                grep -F "<launchable type=\"desktop-id\">TuxPlayerX.desktop</launchable>" "$metadata"
+                "${remove[@]}"
+                test ! -e "$binary"
+                test ! -e "$launcher"
+                test ! -e "$metadata"
+              ' -- "/packages/$(basename "$package")" "$image"
+          }
+
+          verify_uninstall debian:12 TuxPlayerX_amd64.deb
+          verify_uninstall fedora:latest TuxPlayerX_x86_64.rpm
+          verify_uninstall archlinux:latest arch-output/*.pkg.tar.zst
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
