@@ -1,0 +1,48 @@
+pkgname=tuxplayerx-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Desktop streaming player for user-provided IPTV sources'
+arch=('x86_64')
+url='https://github.com/eoliann/TuxPlayerX'
+license=('MIT')
+depends=(
+  'cairo'
+  'dbus'
+  'gcc-libs'
+  'gdk-pixbuf2'
+  'glib2'
+  'glibc>=2.34'
+  'gst-plugins-base'
+  'gst-plugins-good'
+  'gtk3'
+  'hicolor-icon-theme'
+  'libsoup3'
+  'webkit2gtk-4.1'
+  'xdg-utils'
+)
+optdepends=(
+  'gst-libav: additional codecs for embedded playback'
+  'gst-plugins-bad: additional formats for embedded playback'
+  'vlc: playback in an external player'
+)
+provides=("tuxplayerx=${pkgver}")
+conflicts=('tuxplayerx')
+options=('!strip' '!debug')
+
+_deb="tuxplayerx_${pkgver}_amd64.deb"
+_license="tuxplayerx_${pkgver}_LICENSE"
+source=(
+  "${_deb}::${url}/releases/download/v${pkgver}/TuxPlayerX_amd64.deb"
+  "${_license}::https://raw.githubusercontent.com/eoliann/TuxPlayerX/v${pkgver}/LICENSE"
+)
+noextract=("${_deb}")
+sha256sums=('@DEB_SHA256@' '@LICENSE_SHA256@')
+
+prepare() {
+  bsdtar -xf "${_deb}" data.tar.gz
+}
+
+package() {
+  bsdtar -xf data.tar.gz -C "${pkgdir}" --no-same-owner
+  install -Dm644 "${_license}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

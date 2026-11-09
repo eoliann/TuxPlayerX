@@ -1,7 +1,7 @@
 name: Build Linux packages
 
 # Runs automatically when a GitHub release is published and attaches the packages to it as
-# TuxPlayerX_amd64.deb and TuxPlayerX_x86_64.rpm. It can also be run manually from the Actions tab;
+# DEB, RPM and Arch packages. It can also be run manually from the Actions tab;
 # give a release tag (for example v2.0.6) to build that tag and attach the packages to its release.
 on:
   workflow_dispatch:
@@ -68,15 +68,22 @@ jobs:
           cp "$rpm" TuxPlayerX_x86_64.rpm
           echo "Built $(basename "$deb") and $(basename "$rpm")"
 
+      - name: Build Arch package
+        if: hashFiles('packaging/arch/PKGBUILD.in') != ''
+        run: bash scripts/package-arch.sh
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: TuxPlayerX-linux
           path: |
             TuxPlayerX_amd64.deb
             TuxPlayerX_x86_64.rpm
+            arch-output/*
 
       - name: Attach packages to release
         if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_TAG" TuxPlayerX_amd64.deb TuxPlayerX_x86_64.rpm --clobber
+        run: |
+          shopt -s nullglob
+          gh release upload "$RELEASE_TAG" TuxPlayerX_amd64.deb TuxPlayerX_x86_64.rpm arch-output/* --clobber
